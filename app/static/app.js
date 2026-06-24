@@ -355,24 +355,26 @@ $("#editor-search").addEventListener("keydown", (event) => { if (event.key === "
 
 $("#register-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
+  const formElement = event.currentTarget;
+  const form = new FormData(formElement);
   try {
     await api("/auth/register", {method: "POST", body: JSON.stringify({email: form.get("email"), password: form.get("password")})});
-    event.currentTarget.reset();
+    formElement.reset();
     notify("註冊成功，請使用新帳號登入");
   } catch (error) { notify(error.message, true); }
 });
 
 $("#login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
+  const formElement = event.currentTarget;
+  const form = new FormData(formElement);
   try {
     const credentials = {email: form.get("email"), password: form.get("password")};
     const data = await api("/auth/login", {method: "POST", body: JSON.stringify(credentials)});
     const segment = data.access_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
     const payload = JSON.parse(atob(segment.padEnd(Math.ceil(segment.length / 4) * 4, "=")));
     setSession(data.access_token, Number(payload.sub), credentials.email.trim().toLowerCase());
-    event.currentTarget.reset();
+    formElement.reset();
     notify("登入成功");
     switchView("sprites");
   } catch (error) { notify(error.message, true); }
@@ -386,10 +388,11 @@ $("#logout-button").addEventListener("click", async () => {
 
 $("#upload-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
+  const formElement = event.currentTarget;
+  const form = new FormData(formElement);
   try {
     await api("/sprites", {method: "POST", body: form}, true);
-    event.currentTarget.reset();
+    formElement.reset();
     $("#upload-dialog").close();
     notify("素材已上傳");
     state.spritePage = 1;
