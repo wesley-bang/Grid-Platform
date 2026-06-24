@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Grid++ 素材庫</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Grid++ 素材庫首頁">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>Grid++ 素材庫</span>
+    </a>
+    <nav class="tabs" aria-label="主要功能">
+      <button class="tab active" data-view="sprites">素材</button>
+      <button class="tab" data-view="packs">素材包</button>
+      <button class="tab" data-view="account">帳號</button>
+    </nav>
+    <div class="session">
+      <span id="session-label">未登入</span>
+      <button id="logout-button" class="button ghost hidden">登出</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="notice" class="notice hidden" role="status"></section>
+
+    <section id="sprites-view" class="view active">
+      <div class="hero">
+        <div>
+          <p class="eyebrow">32 × 32 RGBA8888</p>
+          <h1>像素素材，整理得剛剛好。</h1>
+          <p>瀏覽公開素材、精準搜尋標籤，或上傳自己的 PNG 與 JPEG。</p>
+        </div>
+        <button id="open-upload" class="button primary">上傳素材</button>
+      </div>
+
+      <form id="sprite-filter" class="filter-bar">
+        <label>名稱<input name="name" type="search" placeholder="例如 ghost"></label>
+        <label>標籤<input name="tags" type="search" placeholder="enemy,character"></label>
+        <label>標籤模式
+          <select name="tag_mode"><option value="and">全部符合</option><option value="or">任一符合</option></select>
+        </label>
+        <label>排序
+          <select name="sort">
+            <option value="newest">最新</option><option value="oldest">最舊</option>
+            <option value="name_asc">名稱 A–Z</option><option value="name_desc">名稱 Z–A</option>
+          </select>
+        </label>
+        <button class="button dark" type="submit">搜尋</button>
+      </form>
+      <div id="sprite-grid" class="card-grid" aria-live="polite"></div>
+      <div id="sprite-pagination" class="pagination"></div>
+    </section>
+
+    <section id="packs-view" class="view">
+      <div class="hero compact">
+        <div>
+          <p class="eyebrow">ORDERED COLLECTIONS</p>
+          <h1>把素材排成遊戲需要的順序。</h1>
+          <p>公開查看素材包，登入後即可建立、重排、更新與匯出。</p>
+        </div>
+        <button id="create-pack" class="button primary">建立素材包</button>
+      </div>
+      <form id="pack-filter" class="filter-bar">
+        <label>名稱<input name="name" type="search" placeholder="搜尋素材包"></label>
+        <label class="check-label"><input name="mine" type="checkbox">只看我的素材包</label>
+        <label>排序
+          <select name="sort">
+            <option value="newest">最新</option><option value="oldest">最舊</option>
+            <option value="name_asc">名稱 A–Z</option><option value="name_desc">名稱 Z–A</option>
+          </select>
+        </label>
+        <button class="button dark" type="submit">搜尋</button>
+      </form>
+      <div id="pack-grid" class="pack-list" aria-live="polite"></div>
+      <div id="pack-pagination" class="pagination"></div>
+    </section>
+
+    <section id="account-view" class="view">
+      <div class="account-layout">
+        <form id="login-form" class="panel">
+          <p class="eyebrow">WELCOME BACK</p>
+          <h2>登入</h2>
+          <label>Email<input name="email" type="email" autocomplete="email" required></label>
+          <label>密碼<input name="password" type="password" autocomplete="current-password" required></label>
+          <button class="button primary" type="submit">登入</button>
+        </form>
+        <form id="register-form" class="panel">
+          <p class="eyebrow">NEW ACCOUNT</p>
+          <h2>註冊</h2>
+          <label>Email<input name="email" type="email" autocomplete="email" required></label>
+          <label>密碼<input name="password" type="password" autocomplete="new-password" required></label>
+          <button class="button dark" type="submit">建立帳號</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="upload-dialog">
+    <form id="upload-form" class="dialog-form">
+      <div class="dialog-heading"><div><p class="eyebrow">NEW SPRITE</p><h2>上傳素材</h2></div><button class="icon-button close-dialog" type="button" aria-label="關閉">×</button></div>
+      <label>圖片檔案<input name="file" type="file" accept=".png,.jpg,.jpeg,image/png,image/jpeg" required></label>
+      <label>名稱<input name="name" required maxlength="40"></label>
+      <label>標籤<input name="tags" placeholder="player,character"></label>
+      <p class="hint">PNG 或 JPEG，最大 5 MiB。圖片會等比例縮放並置中到透明 32×32 畫布。</p>
+      <button class="button primary" type="submit">上傳</button>
+    </form>
+  </dialog>
+
+  <dialog id="pack-dialog">
+    <form id="pack-form" class="dialog-form pack-editor">
+      <div class="dialog-heading"><div><p class="eyebrow">PACK EDITOR</p><h2 id="pack-dialog-title">建立素材包</h2></div><button class="icon-button close-dialog" type="button" aria-label="關閉">×</button></div>
+      <input id="pack-id" type="hidden">
+      <label>素材包名稱<input id="pack-name" required></label>
+      <div class="editor-columns">
+        <section>
+          <div class="section-heading"><h3>素材順序</h3><span id="selected-count">0 個</span></div>
+          <ol id="selected-sprites" class="selected-list"></ol>
+        </section>
+        <section>
+          <div class="section-heading"><h3>加入素材</h3></div>
+          <div class="inline-search"><input id="editor-search" type="search" placeholder="搜尋素材名稱"><button id="editor-search-button" class="button ghost" type="button">搜尋</button></div>
+          <div id="editor-library" class="library-list"></div>
+        </section>
+      </div>
+      <button class="button primary" type="submit">儲存素材包</button>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

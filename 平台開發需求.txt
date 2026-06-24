@@ -1,0 +1,898 @@
+# Grid++ 素材庫平台開發需求
+
+## 專案概述
+
+提供一個網頁平台，讓使用者能上傳、瀏覽、搜尋及管理 32×32 像素素材，將素材依指定順序組成素材包，並匯出為 JSON，供 `create_assets.py` 產生 Grid++ 遊戲引擎使用的 `assets.db`。
+
+本文件為實作規格。未另外註明時，後端、前端與 `create_assets.py` 均應遵守本文件定義的資料格式、驗證規則與錯誤行為。
+
+---
+
+## 技術堆疊
+
+| 層 | 選擇 |
+|----|------|
+| 後端語言 | Python |
+| 後端框架 | FastAPI |
+| 資料庫 | SQLite |
+| ORM | SQLAlchemy |
+| 認證 | JWT（python-jose），HS256 |
+| 密碼雜湊 | bcrypt |
+| 圖片處理 | Pillow |
+| 前端 | 原生 HTML + CSS + JavaScript（不使用任何框架） |
+
+---
+
+## 全域規格
+
+- 所有時間由伺服器產生，使用 UTC 儲存與傳輸
+- API 中的時間字串使用 ISO 8601 格式，例如 `2026-06-24T08:30:00Z`
+- 所有 API 輸入與輸出皆使用 UTF-8
+- 除圖片上傳外，請求與回應使用 `application/json`
+- 圖片上傳使用 `multipart/form-data`
+- SQLite 連線必須啟用 `PRAGMA foreign_keys = ON`
+- 未預期的伺服器例外不得將 stack trace、SQL、檔案路徑或環境變數回傳給前端
+- 預期規模：最高每秒 10 筆請求、總資料不超過一萬筆，SQLite 已足夠
+
+---
+
+## 資料庫 Schema
+
+```
+users
+├── id             INTEGER PK
+├── email          TEXT UNIQUE NOT NULL
+├── password_hash  TEXT NOT NULL            ← bcrypt hash
+└── created_at     DATETIME NOT NULL
+
+sprites
+├── id             INTEGER PK
+├── name           TEXT NOT NULL
+├── tags           TEXT NOT NULL DEFAULT '' ← 正規化後以逗號分隔，例如 "player,character"
+├── image_data     BLOB NOT NULL            ← 32×32 RGBA8888，固定 4096 bytes
+├── owner_id       INTEGER NULL FK → users.id  ON DELETE SET NULL
+└── created_at     DATETIME NOT NULL
+
+packs
+├── id             INTEGER PK
+├── name           TEXT NOT NULL
+├── owner_id       INTEGER NULL FK → users.id  ON DELETE SET NULL
+└── created_at     DATETIME NOT NULL
+
+pack_sprites                              ← 素材包與素材的多對多關聯
+├── pack_id        INTEGER FK → packs.id   ON DELETE CASCADE
+├── sprite_id      INTEGER FK → sprites.id ON DELETE CASCADE
+└── position       INTEGER NOT NULL        ← 從 0 開始且連續
+                    PRIMARY KEY (pack_id, position)
+                    UNIQUE (pack_id, sprite_id)
+```
+
+建議建立以下索引：
+
+```sql
+CREATE INDEX idx_sprites_created_at ON sprites(created_at);
+CREATE INDEX idx_sprites_owner_id ON sprites(owner_id);
+CREATE INDEX idx_packs_owner_id ON packs(owner_id);
+CREATE INDEX idx_pack_sprites_sprite_id ON pack_sprites(sprite_id);
+```
+
+`name` 允許重複，不可設為 UNIQUE。`image_data` 寫入前必須驗證長度恰好為 4096 bytes。
+
+---
+
+## 認證規格
+
+### JWT
+
+- 使用 `HS256`
+- Access token 有效時間固定為 60 分鐘
+- JWT secret 必須由環境變數提供，不可寫死在程式碼或提交至版本控制
+- JWT secret 至少為 32 bytes 的安全隨機資料
+- 開發、測試與正式環境使用不同 secret
+- JWT payload 至少包含：
+
+```json
+{
+  "sub": "使用者 ID 的字串表示",
+  "iat": 1782288000,
+  "exp": 1782291600
+}
+```
+
+### 登出行為
+
+本專案採用無狀態 JWT，不維護 token blacklist。
+
+`POST /auth/logout` 僅執行以下行為：
+
+1. 驗證請求攜帶的 JWT 目前有效
+2. 回傳 `204 No Content`
+3. 前端收到成功回應後刪除 `sessionStorage` 中的 token
+
+已簽發的 JWT 不會由伺服器主動撤銷，最遲於簽發後 60 分鐘失效。
+
+### 前端 Token 儲存
+
+- JWT 儲存於 `sessionStorage`
+- 關閉該瀏覽器分頁後 token 清除
+- 受保護 API 使用以下標頭：
+
+```http
+Authorization: Bearer <JWT_TOKEN>
+```
+
+- 前端不得將使用者輸入直接插入 `innerHTML`
+- 正式環境必須使用 HTTPS
+
+### 帳號欄位
+
+- Email 去除前後空白後轉為小寫再儲存
+- Email 必須通過標準 Email 格式驗證
+- 密碼長度為 8～128 個字元
+- 登入失敗一律回覆「Email 或密碼錯誤」，不可區分帳號不存在或密碼錯誤
+
+---
+
+## 名稱與標籤規格
+
+### 名稱
+
+素材名稱與素材包名稱使用相同限制：
+
+- 去除前後空白
+- 不可為空
+- 不可包含換行、Tab 或其他控制字元
+- 半形英文、數字、空格及一般半形符號權重為 1
+- 中文、全形字元及 Unicode East Asian Width 為 `W` 或 `F` 的字元權重為 2
+- 總權重不可超過 40
+- 因此最多可輸入 40 個半形英文字元、20 個中文字，或兩者混合
+- 儲存及比較前使用 Unicode NFC 正規化
+
+Python 權重計算行為應等價於：
+
+```python
+import unicodedata
+
+def text_weight(value: str) -> int:
+    value = unicodedata.normalize("NFC", value)
+    return sum(
+        2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+        for char in value
+    )
+```
+
+### 標籤
+
+- 每個素材最多 20 個標籤
+- 每個標籤的權重長度最多 20
+- 標籤不可為空
+- 標籤內不可包含逗號、換行、Tab 或其他控制字元
+- 儲存前去除每個標籤的前後空白
+- 英文字母統一轉為小寫
+- 使用 Unicode NFC 正規化
+- 同一素材內的重複標籤只保留一個，保留第一次出現的順序
+- 資料庫中以逗號分隔字串儲存，例如：
+
+```text
+player,character,enemy
+```
+
+API 可接受逗號分隔字串，後端負責正規化，不可直接信任前端已完成處理。
+
+---
+
+## 圖片上傳與轉換規格
+
+### 接受格式
+
+僅接受：
+
+- PNG
+- JPEG（副檔名可為 `.jpg` 或 `.jpeg`）
+
+不得只依賴副檔名或 HTTP `Content-Type`。後端必須執行三層驗證：
+
+1. 副檔名僅允許 `.png`、`.jpg`、`.jpeg`
+2. `Content-Type` 僅允許 `image/png`、`image/jpeg`；可相容接受 `image/jpg`
+3. 使用 Pillow 實際解碼，且 `image.format` 必須為 `PNG` 或 `JPEG`
+
+圖片損壞、內容與宣告格式不符或 Pillow 無法辨識時，回傳 `415 Unsupported Media Type`。
+
+### 檔案與尺寸限制
+
+- 單一上傳檔案最大為 5 MiB，即 5,242,880 bytes
+- 讀取上傳內容時最多讀取 `5 MiB + 1 byte`，不得只信任 `Content-Length`
+- 原始寬度不得超過 4096 px
+- 原始高度不得超過 4096 px
+- 原始總像素不得超過 16,777,216 pixels
+- 超過檔案大小限制回傳 `413 Payload Too Large`
+- 超過尺寸或總像素限制回傳 `422 Unprocessable Entity`
+- 必須處理 Pillow 的 decompression bomb 警告或錯誤，禁止超大解壓縮圖片耗盡記憶體
+
+### 圖片結構驗證
+
+Pillow 驗證流程應包含：
+
+1. 以原始 bytes 建立 `Image`
+2. 檢查 `image.format`
+3. 呼叫 `image.verify()`
+4. 從原始 bytes 重新開啟圖片
+5. 呼叫 `image.load()` 完整解碼
+6. 檢查尺寸與幀數
+
+多幀 PNG／APNG 或其他多幀內容不支援。若 `n_frames != 1`，回傳 `415 Unsupported Media Type`，不可默默只取第一幀。
+
+### EXIF 與 Metadata
+
+- 解碼後先使用 `ImageOps.exif_transpose()` 套用 EXIF 方向
+- 最終只儲存轉換後的 RGBA bytes
+- 不保留 EXIF、GPS、文字註解或任何原始 metadata
+
+### 非正方形圖片處理
+
+圖片保持原始比例，完整容納於 32×32 範圍內，再置中貼至透明畫布：
+
+1. 將圖片轉為 RGBA
+2. 計算 `scale = min(32 / width, 32 / height)`
+3. 新尺寸使用四捨五入，寬高至少為 1 px
+4. 使用 `Image.Resampling.NEAREST` 縮放
+5. 建立 32×32、顏色為 `(0, 0, 0, 0)` 的透明 RGBA 畫布
+6. 將縮放後圖片置中貼上
+7. 不自動裁除原圖透明邊
+8. 小於 32×32 的圖片也允許使用 NEAREST 放大
+
+例如：
+
+```text
+64×32 → 32×16 → 上下補透明區域
+16×32 → 16×32 → 左右補透明區域
+```
+
+若補邊像素數為奇數，允許兩側相差 1 px。
+
+### 最終儲存格式
+
+- 寬度：32
+- 高度：32
+- Pixel format：RGBA8888
+- 排列方式：逐列、由左至右、由上至下，每像素依序為 R、G、B、A
+- 每張素材固定為 `32 × 32 × 4 = 4096 bytes`
+- 寫入資料庫前必須驗證：
+
+```python
+image.size == (32, 32)
+len(image_data) == 4096
+```
+
+---
+
+## API 清單
+
+### 認證
+
+| Method | Path | 權限 | 說明 |
+|--------|------|------|------|
+| POST | `/auth/register` | 公開 | 註冊新帳號 |
+| POST | `/auth/login` | 公開 | 登入並回傳 JWT access token |
+| POST | `/auth/logout` | 需登入 | 驗證 token 後回傳 204；前端刪除本地 token |
+
+### 素材
+
+| Method | Path | 權限 | 說明 |
+|--------|------|------|------|
+| GET | `/sprites` | 公開 | 分頁列出素材，支援名稱、標籤篩選與排序 |
+| GET | `/sprites/{id}/image` | 公開 | 下載單張素材的原始 32×32 RGBA bytes |
+| POST | `/sprites` | 需登入 | 上傳 PNG 或 JPG，後端轉成 32×32 RGBA 儲存 |
+| DELETE | `/sprites/{id}` | 需登入＋本人 | 刪除自己上傳的素材 |
+
+### 素材包
+
+| Method | Path | 權限 | 說明 |
+|--------|------|------|------|
+| POST | `/packs` | 需登入 | 建立素材包，帶入名稱與有順序的 sprite id 清單 |
+| GET | `/packs/{id}` | 公開 | 查看素材包內容 |
+| PATCH | `/packs/{id}` | 需登入＋本人 | 更新素材包名稱或完整取代 sprite id 清單 |
+| DELETE | `/packs/{id}` | 需登入＋本人 | 刪除素材包 |
+| GET | `/packs/{id}/export` | 公開 | 匯出素材包完整資料，供 `create_assets.py` 使用 |
+
+---
+
+## API 詳細規格
+
+### `POST /auth/register`
+
+Request：
+
+```json
+{
+  "email": "user@example.com",
+  "password": "password123"
+}
+```
+
+成功：
+
+- Status：`201 Created`
+- 回傳使用者公開資料，不回傳 `password_hash`
+
+```json
+{
+  "id": 1,
+  "email": "user@example.com",
+  "created_at": "2026-06-24T08:30:00Z"
+}
+```
+
+Email 已存在時回傳 `409 Conflict`，錯誤碼為 `EMAIL_ALREADY_REGISTERED`。
+
+### `POST /auth/login`
+
+Request：
+
+```json
+{
+  "email": "user@example.com",
+  "password": "password123"
+}
+```
+
+成功回傳：
+
+```json
+{
+  "access_token": "<JWT>",
+  "token_type": "bearer",
+  "expires_in": 3600
+}
+```
+
+登入失敗回傳 `401 Unauthorized`，錯誤碼為 `INVALID_CREDENTIALS`。
+
+### `POST /auth/logout`
+
+- 必須攜帶有效 JWT
+- 成功回傳 `204 No Content`
+- 不回傳 body
+- 前端成功後刪除 `sessionStorage` 中的 token
+
+---
+
+### `GET /sprites`
+
+#### Query parameters
+
+| 參數 | 型別 | 預設值 | 規則 |
+|------|------|--------|------|
+| `page` | integer | `1` | 從 1 開始，最小值 1 |
+| `page_size` | integer | `50` | 最小值 1，最大值 100 |
+| `name` | string | 無 | 名稱包含搜尋，忽略英文字母大小寫 |
+| `tags` | string | 無 | 逗號分隔的標籤搜尋詞，採模糊包含搜尋 |
+| `tag_mode` | string | `and` | 僅允許 `and` 或 `or` |
+| `sort` | string | `newest` | `newest`、`oldest`、`name_asc`、`name_desc` |
+
+範例：
+
+```http
+GET /sprites?page=1&page_size=50&name=ghost&tags=enemy,character&tag_mode=or&sort=newest
+```
+
+#### 搜尋行為
+
+- `name=gho` 可匹配 `ghost`、`little ghost`、`GHOST_RED`
+- `tags` 中每個逗號分隔項目為一個搜尋詞
+- 標籤搜尋採不分英文字母大小寫的 substring match
+- `tag_mode=and`：所有標籤搜尋詞皆須符合
+- `tag_mode=or`：任一標籤搜尋詞符合即可
+- `name` 條件與整組 `tags` 條件之間固定使用 AND
+- SQL `LIKE` 中的 `%`、`_` 與 escape 字元必須正確跳脫，不可讓使用者輸入改變搜尋語意
+- 空白搜尋詞在正規化後忽略；若全部皆為空，視為未提供該篩選條件
+
+#### 排序行為
+
+排序必須明確使用 `ORDER BY`，不可依賴 SQLite 未保證的自然順序：
+
+```text
+newest    → created_at DESC, id DESC
+oldest    → created_at ASC, id ASC
+name_asc  → 不分英文字母大小寫的 name ASC, id ASC
+name_desc → 不分英文字母大小寫的 name DESC, id DESC
+```
+
+中文名稱在 MVP 階段依 SQLite／Unicode 順序排列，不宣稱為注音或筆畫排序。
+
+#### 分頁行為
+
+- 篩選後先計算 `total_items`
+- `total_pages = ceil(total_items / page_size)`
+- 當 `total_items = 0` 時，`total_pages = 0`
+- 請求超過最後一頁時回傳空 `items`，不回傳 404
+- 回應必須保持穩定排序，避免翻頁時同一筆資料在相同查詢條件下任意跳動
+
+成功回傳：
+
+```json
+{
+  "items": [
+    {
+      "id": 3,
+      "name": "ghost",
+      "tags": "enemy,character",
+      "owner_id": 7,
+      "created_at": "2026-06-24T08:30:00Z",
+      "image_url": "/sprites/3/image"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "page_size": 50,
+    "total_items": 123,
+    "total_pages": 3,
+    "has_previous": false,
+    "has_next": true
+  }
+}
+```
+
+列表 API 不得回傳 `image_data` 或其 Base64 版本。
+
+### `GET /sprites/{id}/image`
+
+成功回傳：
+
+```http
+Content-Type: application/octet-stream
+Content-Length: 4096
+```
+
+Response body 為原始 4096-byte RGBA8888 資料，不是 PNG。
+
+前端不得直接使用：
+
+```html
+<img src="/sprites/3/image">
+```
+
+前端應使用 `fetch()` 取得 `ArrayBuffer`，建立 32×32 `ImageData`，再使用 `<canvas>` 的 `putImageData()` 顯示。
+
+素材不存在時回傳 `404 Not Found`，錯誤碼為 `SPRITE_NOT_FOUND`。
+
+### `POST /sprites`
+
+使用 `multipart/form-data`：
+
+| 欄位 | 型別 | 必填 | 說明 |
+|------|------|------|------|
+| `file` | file | 是 | PNG 或 JPEG |
+| `name` | string | 是 | 套用名稱權重限制 |
+| `tags` | string | 否 | 逗號分隔，預設空字串 |
+
+成功：
+
+- Status：`201 Created`
+- 回傳素材 metadata，不回傳 `image_data`
+
+```json
+{
+  "id": 3,
+  "name": "ghost",
+  "tags": "enemy,character",
+  "owner_id": 7,
+  "created_at": "2026-06-24T08:30:00Z",
+  "image_url": "/sprites/3/image"
+}
+```
+
+### `DELETE /sprites/{id}`
+
+- 僅 owner 可刪除
+- 素材不存在：`404 SPRITE_NOT_FOUND`
+- 已登入但不是 owner：`403 SPRITE_FORBIDDEN`
+- 成功：`204 No Content`
+- 刪除素材後，對應 `pack_sprites` 關聯由資料庫 `ON DELETE CASCADE` 自動刪除
+
+---
+
+### `POST /packs`
+
+Request：
+
+```json
+{
+  "name": "角色素材",
+  "sprite_ids": [8, 3, 12]
+}
+```
+
+規則：
+
+- `sprite_ids` 陣列順序即素材包順序
+- 後端自動產生 position：0、1、2……
+- 同一 sprite id 不可重複
+- 所有 sprite id 必須存在
+- pack 與全部 `pack_sprites` 必須在同一個 transaction 中建立
+- 任一驗證或寫入失敗時整筆回滾
+- `sprite_ids` 可為空陣列，允許先建立空素材包後再更新
+
+成功：
+
+- Status：`201 Created`
+- 回傳格式同 `GET /packs/{id}`
+
+### `GET /packs/{id}`
+
+成功回傳：
+
+```json
+{
+  "id": 1,
+  "name": "角色素材",
+  "owner_id": 7,
+  "created_at": "2026-06-24T08:30:00Z",
+  "sprites": [
+    {
+      "position": 0,
+      "id": 8,
+      "name": "player",
+      "tags": "player,character",
+      "image_url": "/sprites/8/image"
+    },
+    {
+      "position": 1,
+      "id": 3,
+      "name": "ghost",
+      "tags": "enemy,character",
+      "image_url": "/sprites/3/image"
+    }
+  ]
+}
+```
+
+`sprites` 必須使用：
+
+```sql
+ORDER BY pack_sprites.position ASC
+```
+
+本 API 不回傳 `image_data`。
+
+### `PATCH /packs/{id}`
+
+Request 可包含以下任一或兩者：
+
+```json
+{
+  "name": "更新後名稱",
+  "sprite_ids": [3, 8, 12]
+}
+```
+
+規則：
+
+- 至少提供一個可更新欄位
+- 僅 owner 可更新
+- 若提供 `sprite_ids`，其內容完整取代原素材清單，不是局部增刪
+- 後端驗證全部 sprite id 存在且不重複
+- 更新素材清單時，刪除舊 `pack_sprites` 後依新陣列重建 position
+- 名稱更新與素材清單更新必須放在同一 transaction
+- 失敗時完整回滾，不得留下只更新一半的素材包
+
+成功回傳更新後的完整素材包資料。
+
+### `DELETE /packs/{id}`
+
+- 僅 owner 可刪除
+- 素材包不存在：`404 PACK_NOT_FOUND`
+- 已登入但不是 owner：`403 PACK_FORBIDDEN`
+- 成功：`204 No Content`
+- 對應 `pack_sprites` 由資料庫 `ON DELETE CASCADE` 自動刪除
+- 不刪除被素材包引用的 `sprites`
+
+### `GET /packs/{id}/export`
+
+- 公開 API
+- 素材包不存在時回傳 `404 PACK_NOT_FOUND`
+- `sprites` 必須依 `position` 升序
+- `image_data` 將資料庫中的 4096-byte BLOB 轉為標準 Base64 字串
+- Base64 編碼後使用 ASCII 字串放入 JSON
+
+回傳格式：
+
+```json
+{
+  "schema_version": 1,
+  "pack_id": 1,
+  "name": "我的素材包",
+  "image_spec": {
+    "width": 32,
+    "height": 32,
+    "pixel_format": "RGBA8888",
+    "bytes_per_sprite": 4096
+  },
+  "sprites": [
+    {
+      "position": 0,
+      "id": 3,
+      "name": "ghost",
+      "tags": "enemy,character",
+      "image_data": "<base64 encoded 4096 bytes>"
+    }
+  ]
+}
+```
+
+---
+
+## 業務規則
+
+- 所有素材與素材包皆為公開可見，無私人模式
+- 未登入者可以瀏覽、搜尋、查看素材包及匯出
+- 登入者可以上傳素材及建立素材包
+- 只有 owner 可以刪除自己的素材，以及修改或刪除自己的素材包
+- 素材的 `name` 允許重複
+- 同一 sprite 不可在同一 pack 中重複出現
+- pack 內 position 必須從 0 開始、不得重複且連續
+- 不提供刪除使用者 API；若未來刪除使用者，其素材與素材包的 `owner_id` 設為 NULL
+- 擁有者已不存在且 `owner_id` 為 NULL 的資源仍公開可見，但無一般使用者可修改或刪除
+- `pack_sprites` 的寫入、重排與刪除必須依賴 transaction 與資料庫唯一約束共同保證一致性
+
+---
+
+## API 錯誤格式
+
+所有 API 錯誤統一回傳：
+
+```json
+{
+  "error": {
+    "code": "SPRITE_NOT_FOUND",
+    "message": "找不到指定的素材",
+    "details": {
+      "sprite_id": 123
+    },
+    "request_id": "req_01J..."
+  }
+}
+```
+
+欄位規則：
+
+- `code`：供程式判斷的穩定英文代碼，不因顯示語言改變
+- `message`：供使用者閱讀的訊息
+- `details`：物件、陣列或 `null`
+- `request_id`：每個 HTTP 請求的唯一識別碼，同時寫入伺服器 log
+
+欄位驗證失敗範例：
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "提交的資料格式不正確",
+    "details": [
+      {
+        "field": "name",
+        "code": "NAME_TOO_LONG",
+        "message": "名稱權重不可超過 40"
+      }
+    ],
+    "request_id": "req_01J..."
+  }
+}
+```
+
+### HTTP Status Code
+
+| Status | 使用情況 |
+|--------|----------|
+| `400 Bad Request` | JSON 無法解析、請求語意無效 |
+| `401 Unauthorized` | 未提供 token、token 無效、token 過期、登入失敗 |
+| `403 Forbidden` | 已登入但不是資源 owner |
+| `404 Not Found` | 素材或素材包不存在 |
+| `409 Conflict` | Email 已註冊或其他唯一性衝突 |
+| `413 Payload Too Large` | 上傳檔案超過 5 MiB |
+| `415 Unsupported Media Type` | 不支援或無法解碼的圖片格式、多幀圖片 |
+| `422 Unprocessable Entity` | 欄位驗證失敗、圖片尺寸過大、重複 sprite id |
+| `500 Internal Server Error` | 未預期的伺服器錯誤 |
+
+建議穩定錯誤碼至少包含：
+
+```text
+VALIDATION_ERROR
+INVALID_CREDENTIALS
+AUTH_TOKEN_MISSING
+AUTH_TOKEN_INVALID
+AUTH_TOKEN_EXPIRED
+EMAIL_ALREADY_REGISTERED
+FILE_TOO_LARGE
+INVALID_IMAGE_FORMAT
+ANIMATED_IMAGE_NOT_SUPPORTED
+IMAGE_DIMENSIONS_TOO_LARGE
+NAME_REQUIRED
+NAME_TOO_LONG
+TOO_MANY_TAGS
+TAG_TOO_LONG
+SPRITE_NOT_FOUND
+SPRITE_FORBIDDEN
+PACK_NOT_FOUND
+PACK_FORBIDDEN
+DUPLICATE_SPRITE_IN_PACK
+```
+
+FastAPI 預設的 validation error、HTTP exception 與未預期 exception 應透過 exception handler 轉換為上述統一格式。
+
+---
+
+## CORS 與部署
+
+### 正式環境
+
+優先採用同源部署，例如：
+
+```text
+https://assets.example.com/            ← HTML / CSS / JavaScript
+https://assets.example.com/auth/...    ← FastAPI
+https://assets.example.com/sprites/... ← FastAPI
+https://assets.example.com/packs/...   ← FastAPI
+```
+
+可由 FastAPI 提供靜態檔案，或使用 Nginx：
+
+- `/` 提供前端檔案
+- `/auth`、`/sprites`、`/packs` 反向代理至 FastAPI
+
+同源部署時不需要開放跨來源 CORS。
+
+### 開發環境
+
+若前端與後端使用不同 port，例如：
+
+```text
+http://localhost:5500
+http://localhost:8000
+```
+
+FastAPI 必須透過環境變數取得明確允許的 origin 清單，不可在正式環境使用萬用 `*`。
+
+建議設定等價於：
+
+```python
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+```
+
+本專案使用 Bearer token 而非 Cookie，因此 `allow_credentials=False`。
+
+CORS 只限制瀏覽器跨來源存取，不可取代 JWT、owner 權限驗證或其他伺服器端安全檢查。
+
+---
+
+## `assets.db` 格式規格
+
+每次匯出一個素材包時，`create_assets.py` 產生一個獨立的 `assets.db`。遊戲端資料庫不包含 users、平台權限或其他管理資料。
+
+### Schema version 1
+
+```sql
+PRAGMA user_version = 1;
+
+CREATE TABLE pack_info (
+    singleton      INTEGER PRIMARY KEY CHECK (singleton = 1),
+    source_pack_id INTEGER NOT NULL,
+    name           TEXT NOT NULL,
+    exported_at    TEXT NOT NULL,
+    width          INTEGER NOT NULL CHECK (width = 32),
+    height         INTEGER NOT NULL CHECK (height = 32),
+    pixel_format   TEXT NOT NULL CHECK (pixel_format = 'RGBA8888')
+);
+
+CREATE TABLE sprites (
+    position         INTEGER PRIMARY KEY CHECK (position >= 0),
+    source_sprite_id INTEGER NOT NULL UNIQUE,
+    name             TEXT NOT NULL,
+    tags             TEXT NOT NULL DEFAULT '',
+    image_data       BLOB NOT NULL CHECK (length(image_data) = 4096)
+);
+
+CREATE INDEX idx_assets_sprites_name ON sprites(name);
+```
+
+`pack_info` 只能存在一筆資料，且 `singleton` 固定為 1。
+
+### `create_assets.py` 寫入規則
+
+1. 驗證 `schema_version == 1`
+2. 驗證 `image_spec`：
+   - width = 32
+   - height = 32
+   - pixel_format = `RGBA8888`
+   - bytes_per_sprite = 4096
+3. 驗證 position 從 0 開始、連續且不重複
+4. 驗證 sprite id 不重複
+5. 將每個 `image_data` Base64 解碼
+6. 驗證解碼後長度恰好為 4096 bytes
+7. 將原始 bytes 以 SQLite BLOB 寫入，不可將 Base64 字串直接寫入資料庫
+8. `exported_at` 使用 UTC ISO 8601
+9. 全部寫入動作放在同一 transaction
+10. 任一素材驗證或寫入失敗時完整回滾
+
+### 安全建立流程
+
+`create_assets.py` 應：
+
+1. 建立暫存檔，例如 `assets.db.tmp`
+2. 若暫存檔已存在先刪除
+3. 建立 Schema 並設定 `PRAGMA user_version = 1`
+4. 開啟 transaction
+5. 寫入 `pack_info`
+6. 依 position 寫入全部 sprites
+7. Commit
+8. 執行 `PRAGMA quick_check`
+9. 僅在結果為 `ok` 時，以原子重新命名方式將暫存檔替換為 `assets.db`
+10. 發生錯誤時刪除暫存檔，不覆蓋既有可用的 `assets.db`
+
+---
+
+## 前端最低需求
+
+至少提供以下介面：
+
+- 註冊
+- 登入與登出
+- 分頁瀏覽素材
+- 依名稱搜尋
+- 依標籤搜尋
+- 多標籤 AND／OR 切換
+- 排序選擇
+- 素材圖片 Canvas 預覽
+- 素材上傳
+- 刪除自己的素材
+- 建立素材包
+- 選取素材加入素材包
+- 調整素材順序
+- 查看素材包
+- 更新或刪除自己的素材包
+- 匯出素材包資料
+
+前端所有受保護請求皆須加入 Bearer token。收到 `401` 且錯誤碼為 token 無效或過期時，刪除本地 token 並切換為未登入狀態。
+
+---
+
+## Transaction 與一致性要求
+
+以下操作必須使用資料庫 transaction：
+
+- 建立 pack 與 pack_sprites
+- 更新 pack 名稱及 sprite 清單
+- 完整取代 pack_sprites
+- `create_assets.py` 建立整份 assets.db
+
+在 transaction 寫入前先完成可在記憶體中進行的驗證，例如：
+
+- sprite id 是否重複
+- sprite id 是否全部存在
+- 名稱及標籤是否合法
+- 圖片資料是否為 4096 bytes
+
+資料庫 UNIQUE、PRIMARY KEY、FOREIGN KEY 與 CHECK constraint 必須保留，不能只依靠應用程式驗證。
+
+---
+
+## 注意事項
+
+- FastAPI 啟動後會自動產生互動式 API 文件，路徑為 `/docs`
+- `/docs` 中的 request schema、response schema、status code 與錯誤格式應盡量符合本文件
+- 前端使用原生 `fetch()` 呼叫 API，不引入任何 JS 框架
+- `/sprites` 列表不回傳圖片 bytes，圖片透過獨立 image endpoint 取得
+- 原始 RGBA endpoint 不是 PNG，前端需使用 Canvas 顯示
+- 所有素材包查詢與匯出都必須明確依 position 升序
+- 所有列表排序都必須有唯一且穩定的第二排序鍵 `id`
+- 任何 owner 權限判斷皆以 JWT 中的 user id 與資料庫 `owner_id` 比對
+- SQLite 外鍵功能必須在每個連線啟用，否則 `ON DELETE CASCADE` 與 `ON DELETE SET NULL` 不會正確運作
