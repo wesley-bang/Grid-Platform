@@ -7,4 +7,4 @@ grid_platform.db
 *.db-wal
 assets.db
 assets.db.tmp
-
+*.txt
