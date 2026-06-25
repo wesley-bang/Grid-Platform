@@ -6,7 +6,6 @@ __pycache__/
 grid_platform.db
 *.db-shm
 *.db-wal
+*.txt
 assets.db
 assets.db.tmp
-*.txt
-平台開發需求.txt
