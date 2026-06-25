@@ -286,7 +286,24 @@ function renderLibrary() {
   const selectedIds = new Set(state.selectedSprites.map((sprite) => sprite.id));
   editorLibrary.forEach((sprite) => {
     const row = element("div", {className: "library-item"});
-    row.append(element("span", {className: "item-name", text: sprite.name}));
+    const preview = element("div", {className: "library-preview"});
+    const canvas = element("canvas");
+    canvas.width = 32;
+    canvas.height = 32;
+    canvas.setAttribute("aria-label", `${sprite.name} 預覽`);
+    preview.append(canvas);
+    paintSprite(canvas, sprite.id);
+
+    const details = element("div", {className: "library-details"});
+    details.append(
+      element("span", {className: "item-name", text: sprite.name}),
+      element("span", {className: "meta", text: `#${sprite.id}`}),
+    );
+    const tags = element("div", {className: "tags library-tags"});
+    addTags(tags, sprite.tags);
+    if (!sprite.tags) tags.append(element("span", {className: "meta", text: "無標籤"}));
+    details.append(tags);
+
     const add = element("button", {className: "button ghost", text: selectedIds.has(sprite.id) ? "已加入" : "加入", type: "button"});
     add.disabled = selectedIds.has(sprite.id);
     add.addEventListener("click", () => {
@@ -294,7 +311,7 @@ function renderLibrary() {
       renderSelectedSprites(true);
       renderLibrary();
     });
-    row.append(add);
+    row.append(preview, details, add);
     container.append(row);
   });
   if (!editorLibrary.length) container.append(element("div", {className: "empty", text: "沒有符合的素材"}));

@@ -10,6 +10,7 @@ $env:JWT_SECRET = "請替換為至少 32 bytes 的安全隨機字串"
 alembic upgrade head
 uvicorn app.main:app --reload
 ```
+相同 `JWT_SECRET` 可在一小時內維持登入狀態。 
 
 開啟 <http://127.0.0.1:8000/>，API 文件位於 <http://127.0.0.1:8000/docs>。
 
