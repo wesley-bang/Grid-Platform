@@ -13,7 +13,7 @@
       document.documentElement.dataset.theme = "light";
     }
   </script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260625-10">
+  <link rel="stylesheet" href="/static/styles.css?v=20260625-11">
 </head>
 <body>
   <header class="topbar">
@@ -238,9 +238,16 @@
           <div class="section-heading"><h3>素材順序</h3><span id="selected-count">0 個</span></div>
           <ol id="selected-sprites" class="selected-list"></ol>
         </section>
-        <section>
+        <section id="pack-library-section">
           <div class="section-heading"><h3>加入素材</h3></div>
-          <div class="inline-search"><input id="editor-search" type="search" placeholder="搜尋素材名稱"><button id="editor-search-button" class="button ghost" type="button">搜尋</button></div>
+          <div class="editor-source-tabs" role="tablist" aria-label="素材來源">
+            <button class="editor-source-tab active" data-editor-source="all" type="button" role="tab" aria-selected="true">全部素材</button>
+            <button class="editor-source-tab" data-editor-source="favorites" type="button" role="tab" aria-selected="false">我的收藏</button>
+          </div>
+          <label id="editor-folder-field" class="editor-folder-field hidden">收藏夾
+            <select id="editor-folder-select"></select>
+          </label>
+          <div class="inline-search editor-search-row"><input id="editor-search" type="search" placeholder="搜尋素材名稱"><button id="editor-search-button" class="button ghost" type="button">搜尋</button></div>
           <div id="editor-library" class="library-list"></div>
         </section>
       </div>
@@ -288,6 +295,6 @@
     </div>
   </dialog>
 
-  <script src="/static/app.js?v=20260625-10" defer></script>
+  <script src="/static/app.js?v=20260625-11" defer></script>
 </body>
 </html>

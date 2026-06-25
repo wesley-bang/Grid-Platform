@@ -8,6 +8,10 @@ const state = {
   mySpritePage: 1,
   packPage: 1,
   selectedSprites: [],
+  editorSource: "all",
+  editorLibrary: [],
+  editorFavoriteFolders: [],
+  editorFavoriteFolderId: null,
   theme: document.documentElement.dataset.theme || "light",
   me: null,
   favoriteFolders: [],
@@ -639,7 +643,21 @@ function renderSelectedSprites(editable) {
     const item = element("li", {className: "selected-item"});
     item.draggable = editable;
     item.dataset.index = String(index);
-    item.append(element("span", {className: "item-name", text: `${index}. ${sprite.name}`}));
+
+    const preview = element("div", {className: "selected-preview"});
+    const canvas = element("canvas");
+    canvas.width = 32;
+    canvas.height = 32;
+    canvas.setAttribute("aria-label", `${sprite.name} 預覽`);
+    preview.append(canvas);
+    paintSprite(canvas, sprite.id);
+
+    const details = element("div", {className: "selected-details"});
+    details.append(
+      element("span", {className: "item-name", text: `${index + 1}. ${sprite.name}`}),
+      element("span", {className: "meta", text: `#${sprite.id}`}),
+    );
+    item.append(preview, details);
     if (editable) {
       const actions = element("div", {className: "mini-actions"});
       const up = element("button", {text: "↑", type: "button", title: "上移"});
@@ -672,12 +690,11 @@ function moveSelected(from, to) {
   renderSelectedSprites(true);
 }
 
-let editorLibrary = [];
 function renderLibrary() {
   const container = $("#editor-library");
   container.replaceChildren();
   const selectedIds = new Set(state.selectedSprites.map((sprite) => sprite.id));
-  editorLibrary.forEach((sprite) => {
+  state.editorLibrary.forEach((sprite) => {
     const row = element("div", {className: "library-item"});
     const preview = element("div", {className: "library-preview"});
     const canvas = element("canvas");
@@ -707,18 +724,123 @@ function renderLibrary() {
     row.append(preview, details, add);
     container.append(row);
   });
-  if (!editorLibrary.length) container.append(element("div", {className: "empty", text: "沒有符合的素材"}));
+  if (!state.editorLibrary.length) {
+    let message = "沒有符合的素材";
+    if (
+      state.editorSource === "favorites"
+      && !state.editorFavoriteFolders.length
+    ) {
+      message = "尚未建立收藏夾";
+    } else if (
+      state.editorSource === "favorites"
+      && !state.editorFavoriteFolderId
+    ) {
+      message = "請先選擇收藏夾";
+    } else if (
+      state.editorSource === "favorites"
+      && !$("#editor-search").value.trim()
+    ) {
+      message = "這個收藏夾目前沒有素材";
+    }
+    container.append(element("div", {className: "empty", text: message}));
+  }
 }
 
 async function loadEditorLibrary() {
-  const params = new URLSearchParams({page: "1", page_size: "100", sort: "name_asc"});
   const search = $("#editor-search").value.trim();
-  if (search) params.set("name", search);
+  const container = $("#editor-library");
+  container.replaceChildren(element("div", {className: "empty", text: "載入中…"}));
   try {
-    const data = await api(`/sprites?${params}`);
-    editorLibrary = data.items;
+    if (state.editorSource === "favorites") {
+      if (!state.editorFavoriteFolderId) {
+        state.editorLibrary = [];
+        renderLibrary();
+        return;
+      }
+      const folder = await api(
+        `/favorites/folders/${state.editorFavoriteFolderId}`,
+        {},
+        true,
+      );
+      const normalizedSearch = search.normalize("NFC").toLowerCase();
+      state.editorLibrary = normalizedSearch
+        ? folder.sprites.filter((sprite) =>
+          sprite.name.normalize("NFC").toLowerCase().includes(normalizedSearch))
+        : folder.sprites;
+    } else {
+      const params = new URLSearchParams({
+        page: "1",
+        page_size: "100",
+        sort: "name_asc",
+      });
+      if (search) params.set("name", search);
+      const data = await api(`/sprites?${params}`);
+      state.editorLibrary = data.items;
+    }
     renderLibrary();
-  } catch (error) { notify(error.message, true); }
+  } catch (error) {
+    state.editorLibrary = [];
+    renderLibrary();
+    notify(error.message, true);
+    if (state.editorSource === "favorites") {
+      await loadEditorFavoriteFolders(false);
+      state.editorLibrary = [];
+      renderLibrary();
+    }
+  }
+}
+
+function renderEditorFavoriteFolders() {
+  const select = $("#editor-folder-select");
+  select.replaceChildren();
+  state.editorFavoriteFolders.forEach((folder) => {
+    const option = element("option", {
+      text: `${folder.name}（${folder.sprite_count}）`,
+    });
+    option.value = String(folder.id);
+    option.selected = folder.id === state.editorFavoriteFolderId;
+    select.append(option);
+  });
+  select.disabled = !state.editorFavoriteFolders.length;
+}
+
+async function loadEditorFavoriteFolders(loadLibrary = true) {
+  try {
+    const data = await api("/favorites/folders", {}, true);
+    state.editorFavoriteFolders = data.items;
+    if (
+      !state.editorFavoriteFolders.some(
+        (folder) => folder.id === state.editorFavoriteFolderId,
+      )
+    ) {
+      state.editorFavoriteFolderId = state.editorFavoriteFolders[0]?.id || null;
+    }
+    renderEditorFavoriteFolders();
+    if (loadLibrary) await loadEditorLibrary();
+  } catch (error) {
+    state.editorFavoriteFolders = [];
+    state.editorFavoriteFolderId = null;
+    state.editorLibrary = [];
+    renderEditorFavoriteFolders();
+    renderLibrary();
+    notify(error.message, true);
+  }
+}
+
+async function switchEditorSource(source) {
+  state.editorSource = source;
+  $("#editor-search").value = "";
+  $$(".editor-source-tab").forEach((tab) => {
+    const active = tab.dataset.editorSource === source;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  });
+  $("#editor-folder-field").classList.toggle("hidden", source !== "favorites");
+  if (source === "favorites") {
+    await loadEditorFavoriteFolders();
+  } else {
+    await loadEditorLibrary();
+  }
 }
 
 async function openPackEditor(packId = null) {
@@ -729,6 +851,18 @@ async function openPackEditor(packId = null) {
   }
   $("#pack-id").value = packId || "";
   state.selectedSprites = [];
+  state.editorSource = "all";
+  state.editorLibrary = [];
+  state.editorFavoriteFolders = [];
+  state.editorFavoriteFolderId = null;
+  $("#editor-search").value = "";
+  renderEditorFavoriteFolders();
+  $("#editor-folder-field").classList.add("hidden");
+  $$(".editor-source-tab").forEach((tab) => {
+    const active = tab.dataset.editorSource === "all";
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  });
   let editable = true;
   if (packId !== null) {
     try {
@@ -744,7 +878,7 @@ async function openPackEditor(packId = null) {
   }
   $("#pack-name").disabled = !editable;
   $("#pack-form").querySelector('button[type="submit"]').classList.toggle("hidden", !editable);
-  $(".editor-columns section:last-child").classList.toggle("hidden", !editable);
+  $("#pack-library-section").classList.toggle("hidden", !editable);
   renderSelectedSprites(editable);
   if (editable) await loadEditorLibrary();
   $("#pack-dialog").showModal();
@@ -842,6 +976,14 @@ $$("[data-pan-y]").forEach((button) => {
 $("#create-pack").addEventListener("click", () => openPackEditor());
 $("#editor-search-button").addEventListener("click", loadEditorLibrary);
 $("#editor-search").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); loadEditorLibrary(); } });
+$$(".editor-source-tab").forEach((tab) => {
+  tab.addEventListener("click", () => switchEditorSource(tab.dataset.editorSource));
+});
+$("#editor-folder-select").addEventListener("change", (event) => {
+  state.editorFavoriteFolderId = Number(event.currentTarget.value) || null;
+  $("#editor-search").value = "";
+  loadEditorLibrary();
+});
 
 $("#register-form").addEventListener("submit", async (event) => {
   event.preventDefault();
