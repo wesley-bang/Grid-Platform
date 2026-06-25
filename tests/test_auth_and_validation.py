@@ -9,6 +9,7 @@ from tests.helpers import auth, login, register
 def test_register_normalizes_email_and_returns_z_time(client):
     response = register(client, "  User@Example.COM  ", "長密碼" * 32)
     assert response.status_code == 201
+    assert response.json()["username"] == "User"
     assert response.json()["email"] == "user@example.com"
     assert response.json()["created_at"].endswith("Z")
     assert "password_hash" not in response.json()
@@ -26,9 +27,17 @@ def test_register_normalizes_email_and_returns_z_time(client):
 
 def test_duplicate_email_and_login_do_not_disclose_account_state(client):
     assert register(client).status_code == 201
-    duplicate = register(client)
+    duplicate = register(client, username="different-name")
     assert duplicate.status_code == 409
     assert duplicate.json()["error"]["code"] == "EMAIL_ALREADY_REGISTERED"
+
+    duplicate_username = register(
+        client,
+        "another@example.com",
+        username="USER",
+    )
+    assert duplicate_username.status_code == 409
+    assert duplicate_username.json()["error"]["code"] == "USERNAME_ALREADY_REGISTERED"
 
     missing = client.post(
         "/auth/login",
@@ -46,7 +55,7 @@ def test_duplicate_email_and_login_do_not_disclose_account_state(client):
 def test_json_media_type_extra_fields_and_malformed_json(client):
     wrong_media = client.post(
         "/auth/register",
-        content='{"email":"a@example.com","password":"password123"}',
+        content='{"username":"a","email":"a@example.com","password":"password123"}',
         headers={"Content-Type": "text/plain"},
     )
     assert wrong_media.status_code == 415
@@ -54,7 +63,12 @@ def test_json_media_type_extra_fields_and_malformed_json(client):
 
     extra = client.post(
         "/auth/register",
-        json={"email": "a@example.com", "password": "password123", "admin": True},
+        json={
+            "username": "a",
+            "email": "a@example.com",
+            "password": "password123",
+            "admin": True,
+        },
     )
     assert extra.status_code == 422
     assert extra.json()["error"]["details"][0]["code"] == "EXTRA_FIELD"
@@ -79,4 +93,3 @@ def test_logout_requires_valid_token_and_has_no_body(client):
     assert response.status_code == 204
     assert response.content == b""
     assert response.headers["x-request-id"].startswith("req_")
-

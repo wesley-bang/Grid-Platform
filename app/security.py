@@ -17,6 +17,7 @@ ACCESS_TOKEN_SECONDS = 3600
 
 
 def _bcrypt_input(password: str) -> bytes:
+    # Pre-hash so bcrypt safely supports the full password length.
     digest = hashlib.sha256(password.encode("utf-8")).digest()
     return base64.b64encode(digest)
 
@@ -78,4 +79,3 @@ def token_from_request(request: Request, required: bool) -> int | None:
     if separator != " " or scheme.lower() != "bearer" or not token.strip():
         raise ApiError(401, "AUTH_TOKEN_INVALID")
     return decode_access_token(token.strip())
-

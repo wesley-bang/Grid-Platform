@@ -41,6 +41,19 @@ def normalize_name(value: Any) -> str:
     return normalized
 
 
+def normalize_username(value: Any) -> str:
+    try:
+        return normalize_name(value)
+    except ValidationCodeError as exc:
+        code = {
+            "NAME_INVALID_TYPE": "USERNAME_INVALID_TYPE",
+            "NAME_CONTROL_CHARACTER": "USERNAME_CONTROL_CHARACTER",
+            "NAME_REQUIRED": "USERNAME_REQUIRED",
+            "NAME_TOO_LONG": "USERNAME_TOO_LONG",
+        }.get(exc.code, exc.code)
+        raise ValidationCodeError(code) from exc
+
+
 def ascii_lower(value: str) -> str:
     return ASCII_UPPER.sub(lambda match: match.group(0).lower(), value)
 
@@ -98,12 +111,19 @@ def escape_like(value: str, escape: str = "\\") -> str:
 
 
 class StrictModel(BaseModel):
+    # Reject fields that are not part of the public API contract.
     model_config = ConfigDict(extra="forbid")
 
 
 class RegisterRequest(StrictModel):
+    username: str
     email: EmailStr
     password: str
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def validate_username(cls, value: Any) -> str:
+        return normalize_username(value)
 
     @field_validator("email", mode="before")
     @classmethod
@@ -132,6 +152,32 @@ class LoginRequest(StrictModel):
         if not isinstance(value, str):
             raise ValidationCodeError("EMAIL_INVALID")
         return value.strip().lower()
+
+
+class UserPatchRequest(StrictModel):
+    username: str
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def validate_username(cls, value: Any) -> str:
+        return normalize_username(value)
+
+
+class FavoriteFolderCreateRequest(StrictModel):
+    name: str
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def validate_name(cls, value: Any) -> str:
+        return normalize_name(value)
+
+
+class FavoriteFolderPatchRequest(FavoriteFolderCreateRequest):
+    pass
+
+
+class FavoriteMembershipRequest(StrictModel):
+    folder_ids: list[StrictInt]
 
 
 class PackCreateRequest(StrictModel):

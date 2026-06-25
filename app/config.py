@@ -22,6 +22,7 @@ class Settings:
 
 @lru_cache
 def get_settings() -> Settings:
+    """Load and validate process-level application settings."""
     secret = os.getenv("JWT_SECRET")
     if secret is None:
         raise RuntimeError("JWT_SECRET 環境變數為必填")
@@ -41,4 +42,3 @@ def get_settings() -> Settings:
         jwt_secret=secret,
         cors_origins=origins,
     )
-

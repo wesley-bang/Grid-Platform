@@ -7,7 +7,7 @@ from app.models import Pack, PackSprite, Sprite, User
 
 
 def test_database_checks_foreign_keys_and_delete_actions(db_session):
-    user = User(email="owner@example.com", password_hash="hash")
+    user = User(username="owner", email="owner@example.com", password_hash="hash")
     db_session.add(user)
     db_session.flush()
     sprite = Sprite(

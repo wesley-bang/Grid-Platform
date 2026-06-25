@@ -4,7 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Grid++ 素材庫</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260625-1">
+  <script>
+    try {
+      const savedTheme = localStorage.getItem("grid_theme");
+      document.documentElement.dataset.theme = savedTheme ||
+        (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    } catch (_) {
+      document.documentElement.dataset.theme = "light";
+    }
+  </script>
+  <link rel="stylesheet" href="/static/styles.css?v=20260625-10">
 </head>
 <body>
   <header class="topbar">
@@ -18,6 +27,9 @@
       <button class="tab" data-view="account">帳號</button>
     </nav>
     <div class="session">
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切換黑夜模式" title="切換黑夜模式">
+        <span class="theme-icon" aria-hidden="true">☾</span>
+      </button>
       <span id="session-label">未登入</span>
       <button id="logout-button" class="button ghost hidden">登出</button>
     </div>
@@ -26,6 +38,7 @@
   <main>
     <section id="notice" class="notice hidden" role="status"></section>
 
+    <!-- Primary application views -->
     <section id="sprites-view" class="view active">
       <div class="hero">
         <div>
@@ -79,32 +92,138 @@
     </section>
 
     <section id="account-view" class="view">
-      <div class="account-layout">
+      <div id="account-login" class="account-layout">
         <form id="login-form" class="panel">
           <p class="eyebrow">WELCOME BACK</p>
           <h2>登入</h2>
           <label>Email<input name="email" type="email" autocomplete="email" required></label>
           <label>密碼<input name="password" type="password" autocomplete="current-password" required></label>
           <button class="button primary" type="submit">登入</button>
+          <p class="auth-switch">沒有帳號？<button id="show-register" class="text-button" type="button">點此註冊</button></p>
         </form>
+      </div>
+      <div id="account-dashboard" class="account-dashboard hidden">
+        <div class="account-header">
+          <div>
+            <p class="eyebrow">MY ACCOUNT</p>
+            <h1>帳號與收藏</h1>
+          </div>
+          <nav class="account-tabs" aria-label="帳號功能">
+            <button class="account-tab active" data-account-view="settings" type="button">帳號設定</button>
+            <button class="account-tab" data-account-view="uploads" type="button">我的素材</button>
+            <button class="account-tab" data-account-view="favorites" type="button">我的收藏</button>
+          </nav>
+        </div>
+
+        <section id="account-settings" class="account-section active">
+          <form id="profile-form" class="panel profile-panel">
+            <h2>公開資料</h2>
+            <label>Email<input id="profile-email" type="email" readonly></label>
+            <label>公開暱稱<input id="profile-username" name="username" required></label>
+            <p class="hint">暱稱會顯示在你上傳的所有素材上。</p>
+            <button class="button primary" type="submit">儲存暱稱</button>
+          </form>
+        </section>
+
+        <section id="account-uploads" class="account-section">
+          <form id="my-sprite-filter" class="filter-bar account-filter">
+            <label>名稱<input name="name" type="search" placeholder="搜尋自己的素材"></label>
+            <label>排序
+              <select name="sort">
+                <option value="newest">最新</option><option value="oldest">最舊</option>
+                <option value="name_asc">名稱 A–Z</option><option value="name_desc">名稱 Z–A</option>
+              </select>
+            </label>
+            <button class="button dark" type="submit">搜尋</button>
+          </form>
+          <div id="my-sprite-grid" class="card-grid" aria-live="polite"></div>
+          <div id="my-sprite-pagination" class="pagination"></div>
+        </section>
+
+        <section id="account-favorites" class="account-section">
+          <div class="favorites-layout">
+            <aside class="favorite-sidebar">
+              <div class="section-heading">
+                <h2>收藏夾</h2>
+                <span id="favorite-folder-count" class="meta">0 / 5</span>
+              </div>
+              <form id="favorite-folder-form" class="inline-search">
+                <input name="name" required placeholder="新收藏夾名稱">
+                <button class="button primary" type="submit">建立</button>
+              </form>
+              <div id="favorite-folder-list" class="favorite-folder-list"></div>
+            </aside>
+            <section class="favorite-content">
+              <div id="favorite-folder-heading" class="favorite-folder-heading hidden">
+                <div>
+                  <h2 id="favorite-folder-name"></h2>
+                  <span id="favorite-folder-meta" class="meta"></span>
+                </div>
+                <div class="card-actions">
+                  <button id="rename-favorite-folder" class="button ghost" type="button">重新命名</button>
+                  <button id="delete-favorite-folder" class="button danger" type="button">刪除收藏夾</button>
+                </div>
+              </div>
+              <div id="favorite-sprite-grid" class="card-grid"></div>
+            </section>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section id="register-view" class="view">
+      <div class="account-layout">
         <form id="register-form" class="panel">
           <p class="eyebrow">NEW ACCOUNT</p>
           <h2>註冊</h2>
+          <label>公開使用者名稱<input name="username" autocomplete="username" required></label>
           <label>Email<input name="email" type="email" autocomplete="email" required></label>
           <label>密碼<input name="password" type="password" autocomplete="new-password" required></label>
-          <button class="button dark" type="submit">建立帳號</button>
+          <button class="button primary" type="submit">建立帳號並登入</button>
+          <p class="auth-switch">已經有帳號？<button id="show-login" class="text-button" type="button">返回登入</button></p>
         </form>
       </div>
     </section>
   </main>
 
+  <!-- Editing and preview dialogs -->
   <dialog id="upload-dialog">
     <form id="upload-form" class="dialog-form">
       <div class="dialog-heading"><div><p class="eyebrow">NEW SPRITE</p><h2>上傳素材</h2></div><button class="icon-button close-dialog" type="button" aria-label="關閉">×</button></div>
       <label>圖片檔案<input name="file" type="file" accept=".png,.jpg,.jpeg,image/png,image/jpeg" required></label>
       <label>名稱<input name="name" required maxlength="40"></label>
       <label>標籤<input name="tags" placeholder="player,character"></label>
-      <p class="hint">PNG 或 JPEG，最大 5 MiB。圖片會等比例縮放並置中到透明 32×32 畫布。</p>
+      <div class="upload-workbench">
+        <div class="upload-preview">
+          <canvas id="upload-preview-canvas" width="32" height="32" aria-label="最終 32×32 預覽"></canvas>
+          <p id="upload-preview-status" class="hint">選擇圖片後顯示最終結果</p>
+        </div>
+        <div class="upload-controls">
+          <label>圖片處理方式
+            <select name="image_mode">
+              <option value="pixel">像素保真</option>
+              <option value="fit">完整顯示</option>
+              <option value="smooth">平滑縮放</option>
+            </select>
+          </label>
+          <label class="check-label upload-option">
+            <input name="trim_transparent" type="checkbox" value="true" checked>
+            自動裁切 PNG 的透明邊緣
+          </label>
+          <div id="upload-pan-controls" class="upload-pan-controls hidden">
+            <span class="hint">拖曳預覽或使用按鈕調整裁切位置</span>
+            <div class="pan-buttons" aria-label="調整裁切位置">
+              <button class="button ghost" type="button" data-pan-x="-1">←</button>
+              <button class="button ghost" type="button" data-pan-y="-1">↑</button>
+              <button class="button ghost" type="button" data-pan-y="1">↓</button>
+              <button class="button ghost" type="button" data-pan-x="1">→</button>
+              <button id="reset-upload-focus" class="button ghost" type="button">置中</button>
+            </div>
+          </div>
+          <p class="hint">像素保真會嘗試還原被放大的像素網格；完整顯示會保留整張圖；平滑縮放適合一般插圖。</p>
+        </div>
+      </div>
+      <p class="hint">PNG 或 JPEG，最大 5 MiB。預覽就是儲存後的實際 32×32 結果。</p>
       <button class="button primary" type="submit">上傳</button>
     </form>
   </dialog>
@@ -129,6 +248,46 @@
     </form>
   </dialog>
 
-  <script src="/static/app.js?v=20260625-1" defer></script>
+  <dialog id="sprite-preview-dialog" class="sprite-preview-dialog">
+    <div class="dialog-form">
+      <div class="dialog-heading">
+        <div>
+          <p class="eyebrow">SPRITE PREVIEW</p>
+          <h2 id="sprite-preview-name">素材預覽</h2>
+        </div>
+        <button class="icon-button close-dialog" type="button" aria-label="關閉">×</button>
+      </div>
+      <div class="large-preview">
+        <canvas id="sprite-preview-canvas" width="32" height="32"></canvas>
+      </div>
+      <div class="preview-metadata">
+        <div>
+          <p id="sprite-preview-owner" class="uploader"></p>
+          <div id="sprite-preview-tags" class="tags"></div>
+        </div>
+        <button id="favorite-heart" class="favorite-heart" type="button" aria-label="加入收藏" title="加入收藏">♡</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="favorite-picker-dialog" class="favorite-picker-dialog">
+    <div class="dialog-form">
+      <div class="dialog-heading">
+        <div>
+          <p class="eyebrow">FAVORITES</p>
+          <h2>加入收藏夾</h2>
+        </div>
+        <button class="icon-button close-dialog" type="button" aria-label="關閉">×</button>
+      </div>
+      <div id="favorite-picker-list" class="favorite-picker-list"></div>
+      <form id="favorite-picker-create" class="inline-search">
+        <input name="name" required placeholder="建立新收藏夾">
+        <button class="button ghost" type="submit">建立</button>
+      </form>
+      <button id="save-favorite-membership" class="button primary" type="button">儲存收藏</button>
+    </div>
+  </dialog>
+
+  <script src="/static/app.js?v=20260625-10" defer></script>
 </body>
 </html>

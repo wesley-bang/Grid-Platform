@@ -5,8 +5,17 @@ import io
 from PIL import Image
 
 
-def register(client, email: str = "user@example.com", password: str = "password123"):
-    return client.post("/auth/register", json={"email": email, "password": password})
+def register(
+    client,
+    email: str = "user@example.com",
+    password: str = "password123",
+    username: str | None = None,
+):
+    public_name = username or email.strip().split("@", 1)[0]
+    return client.post(
+        "/auth/register",
+        json={"username": public_name, "email": email, "password": password},
+    )
 
 
 def login(client, email: str = "user@example.com", password: str = "password123"):
@@ -40,11 +49,23 @@ def upload_sprite(
     content: bytes | None = None,
     filename: str = "sprite.png",
     content_type: str = "image/png",
+    image_mode: str | None = None,
+    trim_transparent: bool | None = None,
+    focus_x: float | None = None,
+    focus_y: float | None = None,
 ):
+    data = {"name": name, "tags": tags}
+    if image_mode is not None:
+        data["image_mode"] = image_mode
+    if trim_transparent is not None:
+        data["trim_transparent"] = "true" if trim_transparent else "false"
+    if focus_x is not None:
+        data["focus_x"] = str(focus_x)
+    if focus_y is not None:
+        data["focus_y"] = str(focus_y)
     return client.post(
         "/sprites",
         headers=auth(token),
-        data={"name": name, "tags": tags},
+        data=data,
         files={"file": (filename, content or image_bytes(), content_type)},
     )
-

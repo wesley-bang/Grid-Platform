@@ -6,7 +6,6 @@ import math
 from collections import Counter
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Annotated, Any
 
 import ulid
@@ -25,6 +24,9 @@ from app.image_processing import process_upload
 from app.models import Pack, PackSprite, Sprite, User
 from app.schemas import (
     ErrorResponse,
+    FavoriteFolderListResponse,
+    FavoriteFolderResponse,
+    FavoriteMembershipResponse,
     PackListResponse,
     PackResponse,
     PublicUser,
@@ -40,10 +42,14 @@ from app.security import (
     verify_password,
 )
 from app.validation import (
+    FavoriteFolderCreateRequest,
+    FavoriteFolderPatchRequest,
+    FavoriteMembershipRequest,
     LoginRequest,
     PackCreateRequest,
     PackPatchRequest,
     RegisterRequest,
+    UserPatchRequest,
     escape_like,
     normalize_name,
     normalize_search,
@@ -51,12 +57,14 @@ from app.validation import (
     normalize_tags,
     ascii_lower,
 )
+from app.models import FavoriteFolder, FavoriteFolderSprite
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("grid_platform")
 settings = get_settings()
 
+# Configure the HTTP application and optional development CORS.
 app = FastAPI(
     title="Grid++ 素材庫平台 API",
     version="1.0.0",
@@ -106,6 +114,7 @@ async def request_context(request: Request, call_next):
 install_exception_handlers(app)
 
 
+# Reuse the same documented error responses across endpoints.
 COMMON_ERRORS = {
     400: {"model": ErrorResponse},
     401: {"model": ErrorResponse},
@@ -172,6 +181,22 @@ def optional_user(request: Request, db: Session) -> User | None:
     return user
 
 
+def validate_image_options(
+    image_mode: str,
+    focus_x: float,
+    focus_y: float,
+) -> None:
+    details = []
+    if image_mode not in {"pixel", "fit", "smooth"}:
+        details.append(validation_detail("image_mode", "INVALID_IMAGE_MODE"))
+    if not math.isfinite(focus_x) or not 0 <= focus_x <= 1:
+        details.append(validation_detail("focus_x", "INVALID_IMAGE_FOCUS"))
+    if not math.isfinite(focus_y) or not 0 <= focus_y <= 1:
+        details.append(validation_detail("focus_y", "INVALID_IMAGE_FOCUS"))
+    if details:
+        raise ApiError(422, "VALIDATION_ERROR", details=details)
+
+
 def pagination_payload(page: int, page_size: int, total_items: int) -> dict[str, Any]:
     total_pages = math.ceil(total_items / page_size) if total_items else 0
     return {
@@ -190,6 +215,7 @@ def sprite_payload(sprite: Sprite) -> dict[str, Any]:
         "name": sprite.name,
         "tags": sprite.tags,
         "owner_id": sprite.owner_id,
+        "owner_name": sprite.owner.username if sprite.owner is not None else None,
         "created_at": iso_z(sprite.created_at),
         "image_url": f"/sprites/{sprite.id}/image",
     }
@@ -224,6 +250,57 @@ def load_pack(db: Session, pack_id: int) -> Pack:
     if pack is None:
         raise ApiError(404, "PACK_NOT_FOUND", details={"pack_id": pack_id})
     return pack
+
+
+def load_favorite_folder(db: Session, folder_id: int, owner_id: int) -> FavoriteFolder:
+    folder = db.scalar(
+        select(FavoriteFolder)
+        .where(
+            FavoriteFolder.id == folder_id,
+            FavoriteFolder.owner_id == owner_id,
+        )
+        .options(
+            selectinload(FavoriteFolder.sprite_links).selectinload(
+                FavoriteFolderSprite.sprite
+            ).selectinload(Sprite.owner)
+        )
+    )
+    if folder is None:
+        raise ApiError(
+            404,
+            "FAVORITE_FOLDER_NOT_FOUND",
+            details={"folder_id": folder_id},
+        )
+    return folder
+
+
+def favorite_folder_payload(folder: FavoriteFolder) -> dict[str, Any]:
+    links = sorted(
+        folder.sprite_links,
+        key=lambda link: (link.created_at, link.sprite_id),
+        reverse=True,
+    )
+    return {
+        "id": folder.id,
+        "name": folder.name,
+        "created_at": iso_z(folder.created_at),
+        "sprite_count": len(links),
+        "sprites": [sprite_payload(link.sprite) for link in links],
+    }
+
+
+def favorite_integrity_error(exc: IntegrityError) -> ApiError | None:
+    message = str(exc.orig)
+    if "FAVORITE_FOLDER_LIMIT_REACHED" in message:
+        return ApiError(422, "FAVORITE_FOLDER_LIMIT_REACHED")
+    if "FAVORITE_FOLDER_FULL" in message:
+        return ApiError(422, "FAVORITE_FOLDER_FULL")
+    if (
+        "favorite_folders.owner_id, favorite_folders.name" in message
+        or "uq_favorite_folders_owner_name" in message
+    ):
+        return ApiError(409, "FAVORITE_FOLDER_NAME_CONFLICT")
+    return None
 
 
 def validate_sprite_ids(db: Session, sprite_ids: list[int]) -> None:
@@ -265,6 +342,7 @@ def replace_pack_sprites(db: Session, pack_id: int, sprite_ids: Iterable[int]) -
     )
 
 
+# Authentication endpoints.
 @app.post(
     "/auth/register",
     response_model=PublicUser,
@@ -276,15 +354,26 @@ def register(
     _content_type: Annotated[None, Depends(require_json_content_type)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    user = User(email=str(payload.email), password_hash=hash_password(payload.password))
+    user = User(
+        username=payload.username,
+        email=str(payload.email),
+        password_hash=hash_password(payload.password),
+    )
     db.add(user)
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
+        if db.scalar(select(User.id).where(User.username == payload.username)) is not None:
+            raise ApiError(409, "USERNAME_ALREADY_REGISTERED") from exc
         raise ApiError(409, "EMAIL_ALREADY_REGISTERED") from exc
     db.refresh(user)
-    return {"id": user.id, "email": user.email, "created_at": iso_z(user.created_at)}
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "created_at": iso_z(user.created_at),
+    }
 
 
 @app.post("/auth/login", response_model=TokenResponse, responses=COMMON_ERRORS)
@@ -314,6 +403,42 @@ def logout(request: Request, db: Annotated[Session, Depends(get_db)]) -> Respons
     return Response(status_code=204)
 
 
+# Account profile endpoints.
+@app.get("/users/me", response_model=PublicUser, responses=COMMON_ERRORS)
+def get_me(request: Request, db: Annotated[Session, Depends(get_db)]):
+    user = current_user(request, db)
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "created_at": iso_z(user.created_at),
+    }
+
+
+@app.patch("/users/me", response_model=PublicUser, responses=COMMON_ERRORS)
+def update_me(
+    payload: UserPatchRequest,
+    request: Request,
+    _content_type: Annotated[None, Depends(require_json_content_type)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = current_user(request, db)
+    user.username = payload.username
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ApiError(409, "USERNAME_ALREADY_REGISTERED") from exc
+    db.refresh(user)
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "created_at": iso_z(user.created_at),
+    }
+
+
+# Public sprite browsing and owner management.
 @app.get("/sprites", response_model=SpriteListResponse, responses=COMMON_ERRORS)
 def list_sprites(
     request: Request,
@@ -324,8 +449,12 @@ def list_sprites(
     tags: str | None = None,
     tag_mode: str = "and",
     sort: str = "newest",
+    mine: bool = False,
 ):
-    reject_extra_query(request, {"page", "page_size", "name", "tags", "tag_mode", "sort"})
+    reject_extra_query(
+        request,
+        {"page", "page_size", "name", "tags", "tag_mode", "sort", "mine"},
+    )
     if tag_mode not in {"and", "or"}:
         raise ApiError(
             422,
@@ -339,7 +468,13 @@ def list_sprites(
             details=[validation_detail("sort", "INVALID_SORT")],
         )
 
+    user = optional_user(request, db)
+    if mine and user is None:
+        raise ApiError(401, "AUTH_TOKEN_MISSING")
+
     conditions = []
+    if mine:
+        conditions.append(Sprite.owner_id == user.id)
     name_term = normalize_search(name)
     if name_term:
         conditions.append(
@@ -359,7 +494,7 @@ def list_sprites(
             and_(*tag_conditions) if tag_mode == "and" else or_(*tag_conditions)
         )
 
-    base = select(Sprite).where(*conditions)
+    base = select(Sprite).where(*conditions).options(selectinload(Sprite.owner))
     total_items = db.scalar(select(func.count()).select_from(base.subquery())) or 0
     orderings = {
         "newest": (Sprite.created_at.desc(), Sprite.id.desc()),
@@ -376,6 +511,267 @@ def list_sprites(
     }
 
 
+# Private favorite folder management.
+@app.get(
+    "/favorites/folders",
+    response_model=FavoriteFolderListResponse,
+    responses=COMMON_ERRORS,
+)
+def list_favorite_folders(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+):
+    reject_extra_query(request, set())
+    user = current_user(request, db)
+    sprite_count = (
+        select(func.count(FavoriteFolderSprite.sprite_id))
+        .where(FavoriteFolderSprite.folder_id == FavoriteFolder.id)
+        .correlate(FavoriteFolder)
+        .scalar_subquery()
+    )
+    rows = db.execute(
+        select(FavoriteFolder, sprite_count.label("sprite_count"))
+        .where(FavoriteFolder.owner_id == user.id)
+        .order_by(FavoriteFolder.created_at.desc(), FavoriteFolder.id.desc())
+    ).all()
+    return {
+        "items": [
+            {
+                "id": folder.id,
+                "name": folder.name,
+                "created_at": iso_z(folder.created_at),
+                "sprite_count": count,
+            }
+            for folder, count in rows
+        ],
+        "folder_limit": 5,
+    }
+
+
+@app.post(
+    "/favorites/folders",
+    response_model=FavoriteFolderResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses=COMMON_ERRORS,
+)
+def create_favorite_folder(
+    payload: FavoriteFolderCreateRequest,
+    request: Request,
+    _content_type: Annotated[None, Depends(require_json_content_type)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = current_user(request, db)
+    folder_count = db.scalar(
+        select(func.count(FavoriteFolder.id)).where(FavoriteFolder.owner_id == user.id)
+    ) or 0
+    if folder_count >= 5:
+        raise ApiError(422, "FAVORITE_FOLDER_LIMIT_REACHED")
+    folder = FavoriteFolder(owner_id=user.id, name=payload.name)
+    db.add(folder)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        mapped = favorite_integrity_error(exc)
+        if mapped:
+            raise mapped from exc
+        raise
+    db.refresh(folder)
+    folder.sprite_links = []
+    return favorite_folder_payload(folder)
+
+
+@app.get(
+    "/favorites/folders/{folder_id}",
+    response_model=FavoriteFolderResponse,
+    responses=COMMON_ERRORS,
+)
+def get_favorite_folder(
+    folder_id: int,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = current_user(request, db)
+    return favorite_folder_payload(load_favorite_folder(db, folder_id, user.id))
+
+
+@app.patch(
+    "/favorites/folders/{folder_id}",
+    response_model=FavoriteFolderResponse,
+    responses=COMMON_ERRORS,
+)
+def update_favorite_folder(
+    folder_id: int,
+    payload: FavoriteFolderPatchRequest,
+    request: Request,
+    _content_type: Annotated[None, Depends(require_json_content_type)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = current_user(request, db)
+    folder = load_favorite_folder(db, folder_id, user.id)
+    folder.name = payload.name
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        mapped = favorite_integrity_error(exc)
+        if mapped:
+            raise mapped from exc
+        raise
+    return favorite_folder_payload(load_favorite_folder(db, folder_id, user.id))
+
+
+@app.delete(
+    "/favorites/folders/{folder_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    responses=COMMON_ERRORS,
+)
+def delete_favorite_folder(
+    folder_id: int,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+) -> Response:
+    user = current_user(request, db)
+    folder = load_favorite_folder(db, folder_id, user.id)
+    db.delete(folder)
+    db.commit()
+    return Response(status_code=204)
+
+
+@app.get(
+    "/favorites/sprites/{sprite_id}",
+    response_model=FavoriteMembershipResponse,
+    responses=COMMON_ERRORS,
+)
+def get_favorite_membership(
+    sprite_id: int,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = current_user(request, db)
+    if db.get(Sprite, sprite_id) is None:
+        raise ApiError(404, "SPRITE_NOT_FOUND", details={"sprite_id": sprite_id})
+    folder_ids = db.scalars(
+        select(FavoriteFolderSprite.folder_id)
+        .join(FavoriteFolder)
+        .where(
+            FavoriteFolder.owner_id == user.id,
+            FavoriteFolderSprite.sprite_id == sprite_id,
+        )
+        .order_by(FavoriteFolderSprite.folder_id.asc())
+    ).all()
+    return {"sprite_id": sprite_id, "folder_ids": folder_ids}
+
+
+@app.put(
+    "/favorites/sprites/{sprite_id}",
+    response_model=FavoriteMembershipResponse,
+    responses=COMMON_ERRORS,
+)
+def replace_favorite_membership(
+    sprite_id: int,
+    payload: FavoriteMembershipRequest,
+    request: Request,
+    _content_type: Annotated[None, Depends(require_json_content_type)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = current_user(request, db)
+    if db.get(Sprite, sprite_id) is None:
+        raise ApiError(404, "SPRITE_NOT_FOUND", details={"sprite_id": sprite_id})
+
+    counts = Counter(payload.folder_ids)
+    duplicates = sorted(folder_id for folder_id, count in counts.items() if count > 1)
+    if duplicates:
+        raise ApiError(
+            422,
+            "VALIDATION_ERROR",
+            details=[
+                validation_detail(
+                    "folder_ids",
+                    "DUPLICATE_FOLDER_ID",
+                    folder_ids=duplicates,
+                )
+            ],
+        )
+
+    requested_ids = set(payload.folder_ids)
+    owned_ids = (
+        set(
+            db.scalars(
+                select(FavoriteFolder.id).where(
+                    FavoriteFolder.owner_id == user.id,
+                    FavoriteFolder.id.in_(requested_ids),
+                )
+            ).all()
+        )
+        if requested_ids
+        else set()
+    )
+    if requested_ids != owned_ids:
+        raise ApiError(
+            422,
+            "VALIDATION_ERROR",
+            details=[validation_detail("folder_ids", "FOLDER_IDS_NOT_FOUND")],
+        )
+
+    current_ids = set(
+        db.scalars(
+            select(FavoriteFolderSprite.folder_id)
+            .join(FavoriteFolder)
+            .where(
+                FavoriteFolder.owner_id == user.id,
+                FavoriteFolderSprite.sprite_id == sprite_id,
+            )
+        ).all()
+    )
+    ids_to_add = requested_ids - current_ids
+    if ids_to_add:
+        folder_counts = dict(
+            db.execute(
+                select(
+                    FavoriteFolderSprite.folder_id,
+                    func.count(FavoriteFolderSprite.sprite_id),
+                )
+                .where(FavoriteFolderSprite.folder_id.in_(ids_to_add))
+                .group_by(FavoriteFolderSprite.folder_id)
+            ).all()
+        )
+        full_ids = sorted(
+            folder_id
+            for folder_id in ids_to_add
+            if folder_counts.get(folder_id, 0) >= 100
+        )
+        if full_ids:
+            raise ApiError(
+                422,
+                "FAVORITE_FOLDER_FULL",
+                details={"folder_ids": full_ids},
+            )
+
+    try:
+        db.execute(
+            delete(FavoriteFolderSprite).where(
+                FavoriteFolderSprite.sprite_id == sprite_id,
+                FavoriteFolderSprite.folder_id.in_(current_ids - requested_ids),
+            )
+        )
+        db.add_all(
+            [
+                FavoriteFolderSprite(folder_id=folder_id, sprite_id=sprite_id)
+                for folder_id in ids_to_add
+            ]
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        mapped = favorite_integrity_error(exc)
+        if mapped:
+            raise mapped from exc
+        raise
+    return {"sprite_id": sprite_id, "folder_ids": sorted(requested_ids)}
+
+
 @app.get("/sprites/{sprite_id}/image", responses=COMMON_ERRORS)
 def get_sprite_image(sprite_id: int, db: Annotated[Session, Depends(get_db)]) -> Response:
     sprite = db.get(Sprite, sprite_id)
@@ -387,6 +783,45 @@ def get_sprite_image(sprite_id: int, db: Annotated[Session, Depends(get_db)]) ->
         content=sprite.image_data,
         media_type="application/octet-stream",
         headers={"Content-Length": "4096"},
+    )
+
+
+@app.post("/sprites/preview", responses=COMMON_ERRORS)
+async def preview_sprite_upload(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    file: UploadFile = File(...),
+    image_mode: str = Form("pixel"),
+    trim_transparent: bool = Form(True),
+    focus_x: float = Form(0.5),
+    focus_y: float = Form(0.5),
+) -> Response:
+    await reject_extra_form(
+        request,
+        {"file", "image_mode", "trim_transparent", "focus_x", "focus_y"},
+    )
+    current_user(request, db)
+    validate_image_options(image_mode, focus_x, focus_y)
+    processed = await process_upload(
+        file,
+        image_mode=image_mode,
+        trim_transparent=trim_transparent,
+        focus_x=focus_x,
+        focus_y=focus_y,
+    )
+    return Response(
+        content=processed.data,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": "4096",
+            "X-Logical-Width": str(processed.logical_width),
+            "X-Logical-Height": str(processed.logical_height),
+            "X-Content-Width": str(processed.content_width),
+            "X-Content-Height": str(processed.content_height),
+            "X-Max-Crop-X": str(processed.max_crop_x),
+            "X-Max-Crop-Y": str(processed.max_crop_y),
+            "X-Pixel-Grid-Detected": str(processed.pixel_grid_detected).lower(),
+        },
     )
 
 
@@ -402,9 +837,25 @@ async def create_sprite(
     file: UploadFile = File(...),
     name: str = Form(...),
     tags: str = Form(""),
+    image_mode: str = Form("pixel"),
+    trim_transparent: bool = Form(True),
+    focus_x: float = Form(0.5),
+    focus_y: float = Form(0.5),
 ):
-    await reject_extra_form(request, {"file", "name", "tags"})
+    await reject_extra_form(
+        request,
+        {
+            "file",
+            "name",
+            "tags",
+            "image_mode",
+            "trim_transparent",
+            "focus_x",
+            "focus_y",
+        },
+    )
     user = current_user(request, db)
+    validate_image_options(image_mode, focus_x, focus_y)
     details = []
     try:
         normalized_name = normalize_name(name)
@@ -419,16 +870,23 @@ async def create_sprite(
     if details:
         raise ApiError(422, "VALIDATION_ERROR", details=details)
 
-    image_data = await process_upload(file)
+    processed = await process_upload(
+        file,
+        image_mode=image_mode,
+        trim_transparent=trim_transparent,
+        focus_x=focus_x,
+        focus_y=focus_y,
+    )
     sprite = Sprite(
         name=normalized_name,
         tags=normalized_tags,
-        image_data=image_data,
+        image_data=processed.data,
         owner_id=user.id,
     )
     db.add(sprite)
     db.commit()
     db.refresh(sprite)
+    sprite.owner = user
     return sprite_payload(sprite)
 
 
@@ -470,6 +928,7 @@ def delete_sprite(
     return Response(status_code=204)
 
 
+# Public pack browsing and owner management.
 @app.get("/packs", response_model=PackListResponse, responses=COMMON_ERRORS)
 def list_packs(
     request: Request,
@@ -661,6 +1120,7 @@ STATIC_DIR = PROJECT_ROOT / "app" / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+# Serve the single-page frontend from the application root.
 @app.get("/", include_in_schema=False)
 def frontend() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")

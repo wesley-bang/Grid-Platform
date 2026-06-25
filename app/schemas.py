@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 
 class PublicUser(BaseModel):
     id: int
+    username: str
     email: str
     created_at: datetime
 
@@ -22,6 +23,7 @@ class SpriteResponse(BaseModel):
     name: str
     tags: str
     owner_id: int | None
+    owner_name: str | None
     created_at: datetime
     image_url: str
 
@@ -69,11 +71,25 @@ class PackListResponse(BaseModel):
     pagination: Pagination
 
 
-class ErrorDetail(BaseModel):
-    model_config = ConfigDict(extra="allow")
-    field: str | None = None
-    code: str
-    message: str
+class FavoriteFolderListItem(BaseModel):
+    id: int
+    name: str
+    created_at: datetime
+    sprite_count: int
+
+
+class FavoriteFolderResponse(FavoriteFolderListItem):
+    sprites: list[SpriteResponse]
+
+
+class FavoriteFolderListResponse(BaseModel):
+    items: list[FavoriteFolderListItem]
+    folder_limit: int = 5
+
+
+class FavoriteMembershipResponse(BaseModel):
+    sprite_id: int
+    folder_ids: list[int]
 
 
 class ErrorBody(BaseModel):
@@ -85,4 +101,3 @@ class ErrorBody(BaseModel):
 
 class ErrorResponse(BaseModel):
     error: ErrorBody
-

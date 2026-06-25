@@ -5,13 +5,26 @@ const state = {
   userId: Number(sessionStorage.getItem("grid_user_id")) || null,
   email: sessionStorage.getItem("grid_email"),
   spritePage: 1,
+  mySpritePage: 1,
   packPage: 1,
   selectedSprites: [],
+  theme: document.documentElement.dataset.theme || "light",
+  me: null,
+  favoriteFolders: [],
+  activeFavoriteFolderId: null,
+  previewSprite: null,
+  previewFolderIds: [],
+  uploadFocusX: 0.5,
+  uploadFocusY: 0.5,
+  uploadMaxCropX: 0,
+  uploadMaxCropY: 0,
+  uploadPreviewSequence: 0,
 };
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
+// Small DOM helpers keep user content out of innerHTML.
 function element(tag, options = {}) {
   const node = document.createElement(tag);
   if (options.className) node.className = options.className;
@@ -44,11 +57,31 @@ function setSession(token, userId, email) {
     sessionStorage.removeItem("grid_email");
   }
   renderSession();
+  renderAccountAuthState();
 }
 
 function renderSession() {
   $("#session-label").textContent = state.token ? state.email || "已登入" : "未登入";
   $("#logout-button").classList.toggle("hidden", !state.token);
+}
+
+function renderAccountAuthState() {
+  $("#account-login").classList.toggle("hidden", Boolean(state.token));
+  $("#account-dashboard").classList.toggle("hidden", !state.token);
+}
+
+function renderTheme() {
+  document.documentElement.dataset.theme = state.theme;
+  const dark = state.theme === "dark";
+  $(".theme-icon").textContent = dark ? "☀" : "☾";
+  $("#theme-toggle").setAttribute("aria-label", dark ? "切換明亮模式" : "切換黑夜模式");
+  $("#theme-toggle").title = dark ? "切換明亮模式" : "切換黑夜模式";
+}
+
+function toggleTheme() {
+  state.theme = state.theme === "dark" ? "light" : "dark";
+  localStorage.setItem("grid_theme", state.theme);
+  renderTheme();
 }
 
 async function api(path, options = {}, protectedRequest = false) {
@@ -78,12 +111,18 @@ async function api(path, options = {}, protectedRequest = false) {
 }
 
 function switchView(viewName) {
-  $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === viewName));
+  const primaryView = viewName === "register" ? "account" : viewName;
+  $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === primaryView));
   $$(".view").forEach((view) => view.classList.toggle("active", view.id === `${viewName}-view`));
   if (viewName === "sprites") loadSprites();
   if (viewName === "packs") loadPacks();
+  if (viewName === "account") {
+    renderAccountAuthState();
+    if (state.token) loadAccountDashboard();
+  }
 }
 
+// Render raw RGBA sprites safely through canvas.
 function addTags(container, tags) {
   if (!tags) return;
   tags.split(",").forEach((tag) => container.append(element("span", {className: "tag", text: tag})));
@@ -95,26 +134,165 @@ async function paintSprite(canvas, spriteId) {
     if (bytes.byteLength !== 4096) throw new Error("圖片資料長度錯誤");
     const context = canvas.getContext("2d");
     context.putImageData(new ImageData(bytes, 32, 32), 0, 0);
+    return true;
   } catch (error) {
     canvas.setAttribute("aria-label", error.message);
+    return false;
   }
+}
+
+function clearUploadPreview(message = "選擇圖片後顯示最終結果") {
+  state.uploadPreviewSequence += 1;
+  const canvas = $("#upload-preview-canvas");
+  canvas.getContext("2d").clearRect(0, 0, 32, 32);
+  canvas.classList.remove("can-pan", "dragging");
+  $("#upload-preview-status").textContent = message;
+  $("#upload-pan-controls").classList.add("hidden");
+  state.uploadMaxCropX = 0;
+  state.uploadMaxCropY = 0;
+}
+
+function uploadPreviewPayload() {
+  const form = $("#upload-form");
+  const file = form.elements.file.files[0];
+  if (!file) return null;
+  const payload = new FormData();
+  payload.set("file", file);
+  payload.set("image_mode", form.elements.image_mode.value);
+  payload.set(
+    "trim_transparent",
+    form.elements.trim_transparent.checked ? "true" : "false",
+  );
+  payload.set("focus_x", String(state.uploadFocusX));
+  payload.set("focus_y", String(state.uploadFocusY));
+  return payload;
+}
+
+async function loadUploadPreview() {
+  const payload = uploadPreviewPayload();
+  if (!payload) {
+    clearUploadPreview();
+    return;
+  }
+  const sequence = ++state.uploadPreviewSequence;
+  $("#upload-preview-status").textContent = "正在產生預覽…";
+  try {
+    const response = await fetch("/sprites/preview", {
+      method: "POST",
+      headers: {Authorization: `Bearer ${state.token}`},
+      body: payload,
+    });
+    if (!response.ok) {
+      const data = await response.json();
+      if (
+        response.status === 401
+        && ["AUTH_TOKEN_INVALID", "AUTH_TOKEN_EXPIRED"].includes(data?.error?.code)
+      ) {
+        setSession(null, null, null);
+      }
+      const details = Array.isArray(data?.error?.details)
+        ? data.error.details.map((item) => item.message).join("；")
+        : "";
+      throw new Error(details || data?.error?.message || `HTTP ${response.status}`);
+    }
+    const bytes = new Uint8ClampedArray(await response.arrayBuffer());
+    if (sequence !== state.uploadPreviewSequence) return;
+    if (bytes.byteLength !== 4096) throw new Error("圖片資料長度錯誤");
+
+    const canvas = $("#upload-preview-canvas");
+    canvas.getContext("2d").putImageData(new ImageData(bytes, 32, 32), 0, 0);
+    const logicalWidth = Number(response.headers.get("X-Logical-Width"));
+    const logicalHeight = Number(response.headers.get("X-Logical-Height"));
+    const contentWidth = Number(response.headers.get("X-Content-Width"));
+    const contentHeight = Number(response.headers.get("X-Content-Height"));
+    state.uploadMaxCropX = Number(response.headers.get("X-Max-Crop-X")) || 0;
+    state.uploadMaxCropY = Number(response.headers.get("X-Max-Crop-Y")) || 0;
+    const detected = response.headers.get("X-Pixel-Grid-Detected") === "true";
+    const canPan = state.uploadMaxCropX > 0 || state.uploadMaxCropY > 0;
+    canvas.classList.toggle("can-pan", canPan);
+    $("#upload-pan-controls").classList.toggle("hidden", !canPan);
+
+    const mode = $("#upload-form").elements.image_mode.value;
+    if (mode === "pixel" && detected) {
+      $("#upload-preview-status").textContent =
+        `已還原 ${logicalWidth}×${logicalHeight} 像素網格；內容 ${contentWidth}×${contentHeight}`;
+    } else if (mode === "pixel" && canPan) {
+      $("#upload-preview-status").textContent =
+        `以 ${contentWidth}×${contentHeight} 原始像素裁切，拖曳可調整位置`;
+    } else if (mode === "pixel" && logicalWidth > 64) {
+      $("#upload-preview-status").textContent = "未偵測到可靠像素網格，已改用完整顯示";
+    } else {
+      $("#upload-preview-status").textContent =
+        `最終內容來源：${contentWidth}×${contentHeight}`;
+    }
+  } catch (error) {
+    if (sequence !== state.uploadPreviewSequence) return;
+    clearUploadPreview(error.message);
+  }
+}
+
+function resetUploadFocus(refresh = true) {
+  state.uploadFocusX = 0.5;
+  state.uploadFocusY = 0.5;
+  if (refresh) loadUploadPreview();
+}
+
+function shiftUploadFocus(axis, amount) {
+  const maximum = axis === "x" ? state.uploadMaxCropX : state.uploadMaxCropY;
+  if (!maximum) return;
+  const key = axis === "x" ? "uploadFocusX" : "uploadFocusY";
+  const currentCrop = Math.floor(maximum * state[key] + 0.5);
+  state[key] = Math.max(0, Math.min(maximum, currentCrop + amount)) / maximum;
+  loadUploadPreview();
+}
+
+function uploaderText(sprite) {
+  return sprite.owner_name ? `上傳者：${sprite.owner_name}` : "上傳者：已刪除的使用者";
+}
+
+async function openSpritePreview(sprite) {
+  state.previewSprite = sprite;
+  $("#sprite-preview-name").textContent = sprite.name;
+  $("#sprite-preview-owner").textContent = uploaderText(sprite);
+  const tags = $("#sprite-preview-tags");
+  tags.replaceChildren();
+  addTags(tags, sprite.tags);
+  if (!sprite.tags) tags.append(element("span", {className: "meta", text: "無標籤"}));
+  const canvas = $("#sprite-preview-canvas");
+  canvas.getContext("2d").clearRect(0, 0, 32, 32);
+  await paintSprite(canvas, sprite.id);
+  await refreshPreviewFavoriteState();
+  $("#sprite-preview-dialog").showModal();
 }
 
 function spriteCard(sprite) {
   const card = element("article", {className: "sprite-card"});
-  const preview = element("div", {className: "preview"});
+  const preview = element("button", {
+    className: "preview preview-trigger",
+    type: "button",
+    title: `放大預覽 ${sprite.name}`,
+  });
+  preview.setAttribute("aria-label", `放大預覽 ${sprite.name}`);
   const canvas = element("canvas");
   canvas.width = 32;
   canvas.height = 32;
   preview.append(canvas);
   paintSprite(canvas, sprite.id);
+  preview.addEventListener("click", async () => {
+    preview.disabled = true;
+    try {
+      await openSpritePreview(sprite);
+    } finally {
+      preview.disabled = false;
+    }
+  });
 
   const body = element("div", {className: "card-body"});
   const title = element("div", {className: "card-title"});
   title.append(element("h3", {text: sprite.name}), element("span", {className: "meta", text: `#${sprite.id}`}));
   const tags = element("div", {className: "tags"});
   addTags(tags, sprite.tags);
-  body.append(title, tags);
+  body.append(title, element("p", {className: "uploader", text: uploaderText(sprite)}), tags);
   if (sprite.owner_id === state.userId) {
     const actions = element("div", {className: "card-actions"});
     const remove = element("button", {className: "button danger", text: "刪除", type: "button"});
@@ -124,6 +302,8 @@ function spriteCard(sprite) {
         await api(`/sprites/${sprite.id}`, {method: "DELETE"}, true);
         notify("素材已刪除");
         loadSprites();
+        if (state.token) loadMySprites();
+        if (state.activeFavoriteFolderId) loadFavoriteFolder(state.activeFavoriteFolderId);
       } catch (error) { notify(error.message, true); }
     });
     actions.append(remove);
@@ -170,6 +350,218 @@ async function loadSprites() {
   }
 }
 
+// Account views reuse the public sprite cards and pagination.
+async function loadAccountDashboard() {
+  if (!state.token) return;
+  try {
+    state.me = await api("/users/me", {}, true);
+    $("#profile-email").value = state.me.email;
+    const usernameInput = $("#profile-username");
+    if (usernameInput.dataset.dirty !== "true") {
+      usernameInput.value = state.me.username;
+    }
+    await Promise.all([loadMySprites(), loadFavoriteFolders()]);
+  } catch (error) {
+    notify(error.message, true);
+  }
+}
+
+function switchAccountSection(sectionName) {
+  $$(".account-tab").forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.accountView === sectionName);
+  });
+  $$(".account-section").forEach((section) => {
+    section.classList.toggle("active", section.id === `account-${sectionName}`);
+  });
+  if (sectionName === "uploads") loadMySprites();
+  if (sectionName === "favorites") loadFavoriteFolders();
+}
+
+async function loadMySprites() {
+  if (!state.token) return;
+  const form = new FormData($("#my-sprite-filter"));
+  const params = new URLSearchParams({
+    page: String(state.mySpritePage),
+    page_size: "24",
+    sort: form.get("sort"),
+    mine: "true",
+  });
+  if (form.get("name").trim()) params.set("name", form.get("name"));
+  const grid = $("#my-sprite-grid");
+  grid.replaceChildren(element("div", {className: "empty", text: "載入中…"}));
+  try {
+    const data = await api(`/sprites?${params}`, {}, true);
+    grid.replaceChildren();
+    if (!data.items.length) {
+      grid.append(element("div", {className: "empty", text: "尚未上傳任何素材"}));
+    }
+    data.items.forEach((sprite) => grid.append(spriteCard(sprite)));
+    pagination($("#my-sprite-pagination"), data.pagination, (page) => {
+      state.mySpritePage = page;
+      loadMySprites();
+    });
+  } catch (error) {
+    grid.replaceChildren(element("div", {className: "empty", text: error.message}));
+  }
+}
+
+function favoriteFolderButton(folder) {
+  const button = element("button", {
+    className: "favorite-folder-button",
+    type: "button",
+  });
+  button.classList.toggle("active", folder.id === state.activeFavoriteFolderId);
+  button.append(
+    element("span", {className: "item-name", text: folder.name}),
+    element("span", {className: "meta", text: `${folder.sprite_count} / 100`}),
+  );
+  button.addEventListener("click", () => loadFavoriteFolder(folder.id));
+  return button;
+}
+
+function renderFavoriteFolders() {
+  const list = $("#favorite-folder-list");
+  list.replaceChildren();
+  $("#favorite-folder-count").textContent = `${state.favoriteFolders.length} / 5`;
+  $("#favorite-folder-form button").disabled = state.favoriteFolders.length >= 5;
+  $("#favorite-folder-form input").disabled = state.favoriteFolders.length >= 5;
+  if (!state.favoriteFolders.length) {
+    list.append(element("div", {className: "empty", text: "尚未建立收藏夾"}));
+    $("#favorite-folder-heading").classList.add("hidden");
+    $("#favorite-sprite-grid").replaceChildren(
+      element("div", {className: "empty", text: "建立收藏夾後，即可從素材預覽加入收藏。"}),
+    );
+    state.activeFavoriteFolderId = null;
+    return;
+  }
+  state.favoriteFolders.forEach((folder) => list.append(favoriteFolderButton(folder)));
+}
+
+// Favorite membership is edited as one atomic folder selection.
+async function loadFavoriteFolders(options = {}) {
+  if (!state.token) return;
+  try {
+    const data = await api("/favorites/folders", {}, true);
+    state.favoriteFolders = data.items;
+    if (
+      state.activeFavoriteFolderId &&
+      !state.favoriteFolders.some((folder) => folder.id === state.activeFavoriteFolderId)
+    ) {
+      state.activeFavoriteFolderId = null;
+    }
+    renderFavoriteFolders();
+    const preferredId = options.selectId || state.activeFavoriteFolderId;
+    if (preferredId) {
+      await loadFavoriteFolder(preferredId);
+    } else if (state.favoriteFolders.length && options.openFirst !== false) {
+      await loadFavoriteFolder(state.favoriteFolders[0].id);
+    }
+    return data;
+  } catch (error) {
+    notify(error.message, true);
+    return null;
+  }
+}
+
+async function loadFavoriteFolder(folderId) {
+  try {
+    const folder = await api(`/favorites/folders/${folderId}`, {}, true);
+    state.activeFavoriteFolderId = folder.id;
+    $("#favorite-folder-heading").classList.remove("hidden");
+    $("#favorite-folder-name").textContent = folder.name;
+    $("#favorite-folder-meta").textContent = `${folder.sprite_count} / 100 個素材`;
+    const grid = $("#favorite-sprite-grid");
+    grid.replaceChildren();
+    if (!folder.sprites.length) {
+      grid.append(element("div", {className: "empty", text: "這個收藏夾目前沒有素材"}));
+    }
+    folder.sprites.forEach((sprite) => grid.append(spriteCard(sprite)));
+    renderFavoriteFolders();
+  } catch (error) {
+    notify(error.message, true);
+    await loadFavoriteFolders({openFirst: true});
+  }
+}
+
+async function createFavoriteFolder(name) {
+  const folder = await api(
+    "/favorites/folders",
+    {method: "POST", body: JSON.stringify({name})},
+    true,
+  );
+  await loadFavoriteFolders({selectId: folder.id});
+  return folder;
+}
+
+async function refreshPreviewFavoriteState() {
+  const heart = $("#favorite-heart");
+  heart.classList.remove("active");
+  heart.textContent = "♡";
+  heart.title = state.token ? "管理收藏" : "登入後收藏";
+  heart.setAttribute("aria-label", heart.title);
+  state.previewFolderIds = [];
+  if (!state.token || !state.previewSprite) return;
+  try {
+    const data = await api(
+      `/favorites/sprites/${state.previewSprite.id}`,
+      {},
+      true,
+    );
+    state.previewFolderIds = data.folder_ids;
+    const active = data.folder_ids.length > 0;
+    heart.classList.toggle("active", active);
+    heart.textContent = active ? "♥" : "♡";
+  } catch (error) {
+    notify(error.message, true);
+  }
+}
+
+function renderFavoritePicker() {
+  const list = $("#favorite-picker-list");
+  list.replaceChildren();
+  const selectedIds = new Set(state.previewFolderIds);
+  if (!state.favoriteFolders.length) {
+    list.append(element("div", {className: "empty", text: "尚未建立收藏夾"}));
+  }
+  state.favoriteFolders.forEach((folder) => {
+    const row = element("div", {className: "favorite-picker-item"});
+    const label = element("label");
+    const checkbox = element("input");
+    checkbox.type = "checkbox";
+    checkbox.value = String(folder.id);
+    checkbox.checked = selectedIds.has(folder.id);
+    checkbox.disabled = folder.sprite_count >= 100 && !checkbox.checked;
+    label.append(checkbox, element("span", {text: folder.name}));
+    row.append(
+      label,
+      element("span", {className: "meta", text: `${folder.sprite_count} / 100`}),
+    );
+    list.append(row);
+  });
+  const atLimit = state.favoriteFolders.length >= 5;
+  $("#favorite-picker-create input").disabled = atLimit;
+  $("#favorite-picker-create button").disabled = atLimit;
+}
+
+async function openFavoritePicker() {
+  if (!state.token) {
+    $("#sprite-preview-dialog").close();
+    notify("請先登入後使用收藏功能", true);
+    switchView("account");
+    return;
+  }
+  if (!state.previewSprite) return;
+  await loadFavoriteFolders({openFirst: false});
+  const membership = await api(
+    `/favorites/sprites/${state.previewSprite.id}`,
+    {},
+    true,
+  );
+  state.previewFolderIds = membership.folder_ids;
+  renderFavoritePicker();
+  $("#favorite-picker-dialog").showModal();
+}
+
 function packCard(pack) {
   const card = element("article", {className: "pack-card"});
   const info = element("div");
@@ -199,6 +591,7 @@ function packCard(pack) {
   return card;
 }
 
+// Pack editing keeps sprite order in one client-side list.
 async function loadPacks() {
   const form = new FormData($("#pack-filter"));
   const mine = form.get("mine") === "on";
@@ -357,15 +750,95 @@ async function openPackEditor(packId = null) {
   $("#pack-dialog").showModal();
 }
 
+// Wire page navigation and dialog controls.
 $$(".tab").forEach((tab) => tab.addEventListener("click", () => switchView(tab.dataset.view)));
 $$(".close-dialog").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
+$$(".account-tab").forEach((tab) => {
+  tab.addEventListener("click", () => switchAccountSection(tab.dataset.accountView));
+});
+$("#theme-toggle").addEventListener("click", toggleTheme);
+$("#show-register").addEventListener("click", () => switchView("register"));
+$("#show-login").addEventListener("click", () => switchView("account"));
+$("#favorite-heart").addEventListener("click", openFavoritePicker);
 
 $("#sprite-filter").addEventListener("submit", (event) => { event.preventDefault(); state.spritePage = 1; loadSprites(); });
 $("#pack-filter").addEventListener("submit", (event) => { event.preventDefault(); state.packPage = 1; loadPacks(); });
+$("#my-sprite-filter").addEventListener("submit", (event) => {
+  event.preventDefault();
+  state.mySpritePage = 1;
+  loadMySprites();
+});
 $("#open-upload").addEventListener("click", () => {
   if (!state.token) { notify("請先登入後上傳素材", true); switchView("account"); return; }
   $("#upload-dialog").showModal();
 });
+$("#upload-form input[name=\"file\"]").addEventListener("change", () => {
+  resetUploadFocus(false);
+  loadUploadPreview();
+});
+$("#upload-form select[name=\"image_mode\"]").addEventListener("change", () => {
+  resetUploadFocus();
+});
+$("#upload-form input[name=\"trim_transparent\"]").addEventListener("change", () => {
+  resetUploadFocus();
+});
+$("#reset-upload-focus").addEventListener("click", () => resetUploadFocus());
+$$("[data-pan-x]").forEach((button) => {
+  button.addEventListener("click", () => {
+    shiftUploadFocus("x", Number(button.dataset.panX));
+  });
+});
+$$("[data-pan-y]").forEach((button) => {
+  button.addEventListener("click", () => {
+    shiftUploadFocus("y", Number(button.dataset.panY));
+  });
+});
+{
+  const canvas = $("#upload-preview-canvas");
+  let drag = null;
+  canvas.addEventListener("pointerdown", (event) => {
+    if (!state.uploadMaxCropX && !state.uploadMaxCropY) return;
+    drag = {
+      x: event.clientX,
+      y: event.clientY,
+      focusX: state.uploadFocusX,
+      focusY: state.uploadFocusY,
+    };
+    canvas.setPointerCapture(event.pointerId);
+    canvas.classList.add("dragging");
+  });
+  canvas.addEventListener("pointerup", (event) => {
+    if (!drag) return;
+    const pixels = canvas.clientWidth / 32;
+    if (state.uploadMaxCropX) {
+      state.uploadFocusX = Math.max(
+        0,
+        Math.min(
+          1,
+          drag.focusX
+            - (event.clientX - drag.x) / (pixels * state.uploadMaxCropX),
+        ),
+      );
+    }
+    if (state.uploadMaxCropY) {
+      state.uploadFocusY = Math.max(
+        0,
+        Math.min(
+          1,
+          drag.focusY
+            - (event.clientY - drag.y) / (pixels * state.uploadMaxCropY),
+        ),
+      );
+    }
+    drag = null;
+    canvas.classList.remove("dragging");
+    loadUploadPreview();
+  });
+  canvas.addEventListener("pointercancel", () => {
+    drag = null;
+    canvas.classList.remove("dragging");
+  });
+}
 $("#create-pack").addEventListener("click", () => openPackEditor());
 $("#editor-search-button").addEventListener("click", loadEditorLibrary);
 $("#editor-search").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); loadEditorLibrary(); } });
@@ -375,9 +848,29 @@ $("#register-form").addEventListener("submit", async (event) => {
   const formElement = event.currentTarget;
   const form = new FormData(formElement);
   try {
-    await api("/auth/register", {method: "POST", body: JSON.stringify({email: form.get("email"), password: form.get("password")})});
+    const credentials = {
+      username: form.get("username"),
+      email: form.get("email"),
+      password: form.get("password"),
+    };
+    await api("/auth/register", {
+      method: "POST",
+      body: JSON.stringify(credentials),
+    });
+    const data = await api("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({email: credentials.email, password: credentials.password}),
+    });
+    const segment = data.access_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(segment.padEnd(Math.ceil(segment.length / 4) * 4, "=")));
+    setSession(
+      data.access_token,
+      Number(payload.sub),
+      credentials.email.trim().toLowerCase(),
+    );
     formElement.reset();
-    notify("註冊成功，請使用新帳號登入");
+    notify("註冊成功，已自動登入");
+    switchView("sprites");
   } catch (error) { notify(error.message, true); }
 });
 
@@ -400,16 +893,146 @@ $("#login-form").addEventListener("submit", async (event) => {
 $("#logout-button").addEventListener("click", async () => {
   try { await api("/auth/logout", {method: "POST"}, true); }
   catch (error) { notify(error.message, true); }
-  finally { setSession(null, null, null); }
+  finally {
+    state.me = null;
+    state.favoriteFolders = [];
+    state.activeFavoriteFolderId = null;
+    setSession(null, null, null);
+  }
+});
+
+$("#profile-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const formElement = event.currentTarget;
+  try {
+    state.me = await api(
+      "/users/me",
+      {
+        method: "PATCH",
+        body: JSON.stringify({username: $("#profile-username").value}),
+      },
+      true,
+    );
+    $("#profile-username").value = state.me.username;
+    $("#profile-username").dataset.dirty = "false";
+    notify("暱稱已更新");
+    loadSprites();
+    loadMySprites();
+    if (state.activeFavoriteFolderId) loadFavoriteFolder(state.activeFavoriteFolderId);
+  } catch (error) {
+    notify(error.message, true);
+    formElement.reportValidity();
+  }
+});
+$("#profile-username").addEventListener("input", (event) => {
+  event.currentTarget.dataset.dirty = "true";
+});
+
+$("#favorite-folder-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const formElement = event.currentTarget;
+  const name = new FormData(formElement).get("name");
+  try {
+    await createFavoriteFolder(name);
+    formElement.reset();
+    notify("收藏夾已建立");
+  } catch (error) {
+    notify(error.message, true);
+  }
+});
+
+$("#rename-favorite-folder").addEventListener("click", async () => {
+  const folder = state.favoriteFolders.find(
+    (item) => item.id === state.activeFavoriteFolderId,
+  );
+  if (!folder) return;
+  const name = prompt("新的收藏夾名稱", folder.name);
+  if (name === null) return;
+  try {
+    await api(
+      `/favorites/folders/${folder.id}`,
+      {method: "PATCH", body: JSON.stringify({name})},
+      true,
+    );
+    await loadFavoriteFolders({selectId: folder.id});
+    notify("收藏夾已重新命名");
+  } catch (error) {
+    notify(error.message, true);
+  }
+});
+
+$("#delete-favorite-folder").addEventListener("click", async () => {
+  const folder = state.favoriteFolders.find(
+    (item) => item.id === state.activeFavoriteFolderId,
+  );
+  if (!folder || !confirm(`確定刪除收藏夾「${folder.name}」？素材本身不會被刪除。`)) {
+    return;
+  }
+  try {
+    await api(`/favorites/folders/${folder.id}`, {method: "DELETE"}, true);
+    state.activeFavoriteFolderId = null;
+    await loadFavoriteFolders({openFirst: true});
+    await refreshPreviewFavoriteState();
+    notify("收藏夾已刪除");
+  } catch (error) {
+    notify(error.message, true);
+  }
+});
+
+$("#favorite-picker-create").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const formElement = event.currentTarget;
+  const name = new FormData(formElement).get("name");
+  try {
+    const folder = await createFavoriteFolder(name);
+    state.previewFolderIds = [...new Set([...state.previewFolderIds, folder.id])];
+    formElement.reset();
+    renderFavoritePicker();
+  } catch (error) {
+    notify(error.message, true);
+  }
+});
+
+$("#save-favorite-membership").addEventListener("click", async () => {
+  if (!state.previewSprite) return;
+  const folderIds = $$("#favorite-picker-list input[type='checkbox']:checked").map(
+    (checkbox) => Number(checkbox.value),
+  );
+  try {
+    const result = await api(
+      `/favorites/sprites/${state.previewSprite.id}`,
+      {method: "PUT", body: JSON.stringify({folder_ids: folderIds})},
+      true,
+    );
+    state.previewFolderIds = result.folder_ids;
+    $("#favorite-picker-dialog").close();
+    await refreshPreviewFavoriteState();
+    await loadFavoriteFolders({
+      selectId: state.activeFavoriteFolderId,
+      openFirst: false,
+    });
+    notify(folderIds.length ? "收藏已更新" : "已移出所有收藏夾");
+  } catch (error) {
+    notify(error.message, true);
+  }
 });
 
 $("#upload-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const formElement = event.currentTarget;
   const form = new FormData(formElement);
+  form.set("image_mode", formElement.elements.image_mode.value);
+  form.set(
+    "trim_transparent",
+    formElement.elements.trim_transparent.checked ? "true" : "false",
+  );
+  form.set("focus_x", String(state.uploadFocusX));
+  form.set("focus_y", String(state.uploadFocusY));
   try {
     await api("/sprites", {method: "POST", body: form}, true);
     formElement.reset();
+    resetUploadFocus(false);
+    clearUploadPreview();
     $("#upload-dialog").close();
     notify("素材已上傳");
     state.spritePage = 1;
@@ -431,4 +1054,6 @@ $("#pack-form").addEventListener("submit", async (event) => {
 });
 
 renderSession();
+renderAccountAuthState();
+renderTheme();
 loadSprites();

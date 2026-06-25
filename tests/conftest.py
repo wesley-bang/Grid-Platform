@@ -8,7 +8,7 @@ os.environ.setdefault("CORS_ORIGINS", "http://localhost:5500")
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
@@ -60,4 +60,3 @@ def client():
 def db_session():
     with TestingSession() as session:
         yield session
-

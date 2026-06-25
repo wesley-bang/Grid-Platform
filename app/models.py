@@ -21,16 +21,21 @@ def utc_now_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+# Platform account and asset models.
 class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(Text(collation="NOCASE"), unique=True, nullable=False)
     email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
 
     sprites: Mapped[list["Sprite"]] = relationship(back_populates="owner")
     packs: Mapped[list["Pack"]] = relationship(back_populates="owner")
+    favorite_folders: Mapped[list["FavoriteFolder"]] = relationship(
+        back_populates="owner", cascade="all, delete-orphan", passive_deletes=True
+    )
 
 
 class Sprite(Base):
@@ -52,6 +57,9 @@ class Sprite(Base):
 
     owner: Mapped[User | None] = relationship(back_populates="sprites")
     pack_links: Mapped[list["PackSprite"]] = relationship(
+        back_populates="sprite", passive_deletes=True
+    )
+    favorite_links: Mapped[list["FavoriteFolderSprite"]] = relationship(
         back_populates="sprite", passive_deletes=True
     )
 
@@ -94,3 +102,47 @@ class PackSprite(Base):
 
     pack: Mapped[Pack] = relationship(back_populates="sprite_links")
     sprite: Mapped[Sprite] = relationship(back_populates="pack_links")
+
+
+# Private favorite collection models.
+class FavoriteFolder(Base):
+    __tablename__ = "favorite_folders"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "name", name="uq_favorite_folders_owner_name"),
+        Index("idx_favorite_folders_owner_id", "owner_id"),
+        Index("idx_favorite_folders_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(Text(collation="NOCASE"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
+
+    owner: Mapped[User] = relationship(back_populates="favorite_folders")
+    sprite_links: Mapped[list["FavoriteFolderSprite"]] = relationship(
+        back_populates="folder",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="FavoriteFolderSprite.created_at.desc()",
+    )
+
+
+class FavoriteFolderSprite(Base):
+    __tablename__ = "favorite_folder_sprites"
+    __table_args__ = (
+        Index("idx_favorite_folder_sprites_sprite_id", "sprite_id"),
+        Index("idx_favorite_folder_sprites_created_at", "created_at"),
+    )
+
+    folder_id: Mapped[int] = mapped_column(
+        ForeignKey("favorite_folders.id", ondelete="CASCADE"), primary_key=True
+    )
+    sprite_id: Mapped[int] = mapped_column(
+        ForeignKey("sprites.id", ondelete="CASCADE"), primary_key=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
+
+    folder: Mapped[FavoriteFolder] = relationship(back_populates="sprite_links")
+    sprite: Mapped[Sprite] = relationship(back_populates="favorite_links")

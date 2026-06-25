@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 logger = logging.getLogger("grid_platform")
 
+# Stable messages shared by all API error responses.
 MESSAGES: dict[str, str] = {
     "VALIDATION_ERROR": "提交的資料格式不正確",
     "BAD_REQUEST": "請求內容不正確",
@@ -22,6 +23,7 @@ MESSAGES: dict[str, str] = {
     "AUTH_TOKEN_INVALID": "登入憑證無效",
     "AUTH_TOKEN_EXPIRED": "登入憑證已過期",
     "EMAIL_ALREADY_REGISTERED": "此 Email 已註冊",
+    "USERNAME_ALREADY_REGISTERED": "此使用者名稱已被使用",
     "FILE_TOO_LARGE": "上傳檔案不可超過 5 MiB",
     "INVALID_IMAGE_FORMAT": "圖片格式不受支援或內容無法解碼",
     "ANIMATED_IMAGE_NOT_SUPPORTED": "不支援多幀圖片",
@@ -30,12 +32,20 @@ MESSAGES: dict[str, str] = {
     "SPRITE_FORBIDDEN": "無權刪除此素材",
     "PACK_NOT_FOUND": "找不到指定的素材包",
     "PACK_FORBIDDEN": "無權修改此素材包",
+    "FAVORITE_FOLDER_NOT_FOUND": "找不到指定的收藏夾",
+    "FAVORITE_FOLDER_NAME_CONFLICT": "此收藏夾名稱已存在",
+    "FAVORITE_FOLDER_LIMIT_REACHED": "每個帳號最多建立 5 個收藏夾",
+    "FAVORITE_FOLDER_FULL": "收藏夾最多包含 100 個素材",
     "INTERNAL_SERVER_ERROR": "伺服器發生未預期的錯誤",
     "NOT_FOUND": "找不到指定的資源",
 }
 
 DETAIL_MESSAGES: dict[str, str] = {
     "EMAIL_INVALID": "Email 格式不正確",
+    "USERNAME_REQUIRED": "使用者名稱不可為空",
+    "USERNAME_TOO_LONG": "使用者名稱權重不可超過 40",
+    "USERNAME_CONTROL_CHARACTER": "使用者名稱不可包含控制字元",
+    "USERNAME_INVALID_TYPE": "使用者名稱必須是字串",
     "PASSWORD_TOO_SHORT": "密碼長度不可少於 8 個字元",
     "PASSWORD_TOO_LONG": "密碼長度不可超過 128 個字元",
     "NAME_REQUIRED": "名稱不可為空",
@@ -50,12 +60,16 @@ DETAIL_MESSAGES: dict[str, str] = {
     "DUPLICATE_SPRITE_IN_PACK": "同一素材不可在素材包中重複",
     "SPRITE_IDS_NOT_FOUND": "部分素材 ID 不存在",
     "SPRITE_IDS_REQUIRED": "sprite_ids 不可為 null",
+    "FOLDER_IDS_NOT_FOUND": "部分收藏夾不存在",
+    "DUPLICATE_FOLDER_ID": "收藏夾 ID 不可重複",
     "PATCH_FIELDS_REQUIRED": "至少須提供一個可更新欄位",
     "INVALID_PAGE": "page 必須是大於等於 1 的整數",
     "INVALID_PAGE_SIZE": "page_size 必須是 1 至 100 的整數",
     "INVALID_TAG_MODE": "tag_mode 僅允許 and 或 or",
     "INVALID_SORT": "sort 值不受支援",
     "INVALID_MINE": "mine 必須是布林值",
+    "INVALID_IMAGE_MODE": "image_mode 僅允許 pixel、fit 或 smooth",
+    "INVALID_IMAGE_FOCUS": "focus_x 與 focus_y 必須介於 0 和 1",
     "EXTRA_FIELD": "包含規格未定義的欄位",
     "MISSING_FIELD": "缺少必填欄位",
     "INVALID_TYPE": "欄位型別不正確",

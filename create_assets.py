@@ -45,6 +45,7 @@ class ExportValidationError(ValueError):
     pass
 
 
+# Validate the exported JSON before touching the output database.
 def require_exact_keys(value: dict[str, Any], expected: set[str], location: str) -> None:
     missing = sorted(expected - set(value))
     extra = sorted(set(value) - expected)
@@ -146,6 +147,7 @@ def utc_iso_z() -> str:
 
 
 def build_assets_db(export: dict[str, Any], output_path: Path) -> None:
+    """Build and atomically replace a validated assets database."""
     output_path = output_path.resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = output_path.with_name(f"{output_path.name}.tmp")
@@ -225,4 +227,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
