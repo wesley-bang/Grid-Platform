@@ -16,7 +16,7 @@ uvicorn app.main:app --reload
 
 可用 `DATABASE_URL` 覆寫平台資料庫位置，以逗號分隔的 `CORS_ORIGINS` 設定允許來源。
 
-## 圖片處理
+## 上傳圖片處理
 
 上傳視窗會顯示最終 32×32 預覽，並提供三種模式：
 
@@ -25,6 +25,8 @@ uvicorn app.main:app --reload
 - 平滑縮放：以預乘 Alpha 的高品質縮放處理一般插圖。
 
 ## 產生遊戲端 assets.db
+
+把素材包 `.json` 轉成遊戲端可以用的 `.db`
 
 ```powershell
 python create_assets.py export.json
