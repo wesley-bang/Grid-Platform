@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from tests.helpers import auth, login, register, upload_sprite
 
 
@@ -13,7 +15,7 @@ def setup_sprites(client):
     return token, sprites
 
 
-def test_create_update_list_and_export_pack(client):
+def test_create_update_list_and_export_pack(client, tmp_path):
     token, sprites = setup_sprites(client)
     created = client.post(
         "/packs",
@@ -40,10 +42,29 @@ def test_create_update_list_and_export_pack(client):
 
     exported = client.get(f"/packs/{pack['id']}/export")
     assert exported.status_code == 200
-    data = exported.json()
-    assert data["schema_version"] == 1
-    assert data["sprites"][0]["position"] == 0
-    assert len(data["sprites"][0]["image_data"]) > 4096
+    assert exported.headers["content-type"] == "application/octet-stream"
+    assert "filename=\"assets.db\"" in exported.headers["content-disposition"]
+    assert exported.content.startswith(b"SQLite format 3\x00")
+
+    output = tmp_path / "exported.db"
+    output.write_bytes(exported.content)
+    with sqlite3.connect(output) as connection:
+        assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        tables = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+        assert tables == [("sprites",)]
+        columns = connection.execute("PRAGMA table_info(sprites)").fetchall()
+        assert [(column[1], column[2], column[5]) for column in columns] == [
+            ("id", "INTEGER", 1),
+            ("name", "TEXT", 0),
+            ("tags", "TEXT", 0),
+            ("image_data", "BLOB", 0),
+        ]
+        rows = connection.execute(
+            "SELECT id, name, tags, length(image_data) FROM sprites ORDER BY id"
+        ).fetchall()
+        assert rows == [(1, "beta", "character", 4096)]
 
 
 def test_duplicate_and_missing_sprite_ids_roll_back(client):
@@ -116,4 +137,3 @@ def test_mine_requires_token_and_invalid_optional_token_is_rejected(client):
         headers={"Authorization": "Bearer invalid"},
     )
     assert invalid.status_code == 401
-

@@ -24,13 +24,8 @@ uvicorn app.main:app --reload
 - 完整顯示：以 NEAREST 將完整內容等比例縮入 32×32。
 - 平滑縮放：以預乘 Alpha 的高品質縮放處理一般插圖。
 
-## 產生遊戲端 assets.db
+## 匯出遊戲端 assets.db
 
-把素材包 `.json` 轉成遊戲端可以用的 `.db`
+在「素材包」頁面點擊「匯出 .db」即可直接下載 Grid++ 引擎使用的 SQLite 檔。
 
-```powershell
-python create_assets.py export.json
-python create_assets.py export.json custom-assets.db
-```
-
-省略輸出路徑時，會在輸入 JSON 同一目錄建立 `assets.db`。
+匯出的檔案只包含 `sprites(id, name, tags, image_data)`，其中 `image_data` 是固定 4096 bytes 的 32×32 RGBA8888 原始資料。

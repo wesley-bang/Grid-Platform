@@ -204,6 +204,14 @@ def test_search_escapes_like_wildcards_and_stable_pagination(client):
     assert [item["name"] for item in percent.json()["items"]] == ["100% hero"]
     underscore = client.get("/sprites", params={"name": "_"})
     assert [item["name"] for item in underscore.json()["items"]] == ["under_score"]
+    by_id = client.get(
+        "/sprites",
+        params={"id": upload_sprite(client, token, "exact id", "utility").json()["id"]},
+    )
+    assert [item["name"] for item in by_id.json()["items"]] == ["exact id"]
+    missing_id = client.get("/sprites", params={"id": 99999})
+    assert missing_id.status_code == 200
+    assert missing_id.json()["items"] == []
     beyond = client.get("/sprites", params={"page": 9, "page_size": 2})
     assert beyond.status_code == 200
     assert beyond.json()["items"] == []

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-import base64
 import logging
 import math
+import sqlite3
+import tempfile
 from collections import Counter
 from collections.abc import Iterable
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote
 
 import ulid
 from fastapi import Depends, FastAPI, File, Form, Query, Request, Response, UploadFile, status
@@ -241,6 +244,58 @@ def pack_payload(pack: Pack) -> dict[str, Any]:
     }
 
 
+def pack_db_filename(name: str, pack_id: int) -> str:
+    cleaned = "".join(
+        "_" if character in '\\/:*?"<>|' or ord(character) < 32 else character
+        for character in name.strip()
+    )
+    return f"{cleaned or f'pack-{pack_id}'}.db"
+
+
+def build_pack_assets_db(links: list[PackSprite]) -> bytes:
+    """Create the engine-facing SQLite file bytes for one pack."""
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temporary:
+            temporary_path = Path(temporary.name)
+
+        connection = sqlite3.connect(temporary_path)
+        try:
+            connection.execute(
+                """
+                CREATE TABLE sprites (
+                    id         INTEGER PRIMARY KEY,
+                    name       TEXT,
+                    tags       TEXT,
+                    image_data BLOB
+                )
+                """
+            )
+            for link in links:
+                if len(link.sprite.image_data) != 4096:
+                    raise ApiError(500, "INTERNAL_SERVER_ERROR")
+                connection.execute(
+                    """
+                    INSERT INTO sprites (name, tags, image_data)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        link.sprite.name,
+                        link.sprite.tags,
+                        sqlite3.Binary(link.sprite.image_data),
+                    ),
+                )
+            connection.commit()
+            if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                raise ApiError(500, "INTERNAL_SERVER_ERROR")
+        finally:
+            connection.close()
+        return temporary_path.read_bytes()
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
 def load_pack(db: Session, pack_id: int) -> Pack:
     pack = db.scalar(
         select(Pack)
@@ -445,6 +500,7 @@ def list_sprites(
     db: Annotated[Session, Depends(get_db)],
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
+    sprite_id: int | None = Query(None, alias="id", ge=1),
     name: str | None = None,
     tags: str | None = None,
     tag_mode: str = "and",
@@ -453,7 +509,7 @@ def list_sprites(
 ):
     reject_extra_query(
         request,
-        {"page", "page_size", "name", "tags", "tag_mode", "sort", "mine"},
+        {"page", "page_size", "id", "name", "tags", "tag_mode", "sort", "mine"},
     )
     if tag_mode not in {"and", "or"}:
         raise ApiError(
@@ -475,6 +531,8 @@ def list_sprites(
     conditions = []
     if mine:
         conditions.append(Sprite.owner_id == user.id)
+    if sprite_id is not None:
+        conditions.append(Sprite.id == sprite_id)
     name_term = normalize_search(name)
     if name_term:
         conditions.append(
@@ -1089,31 +1147,34 @@ def delete_pack(
     return Response(status_code=204)
 
 
-@app.get("/packs/{pack_id}/export", responses=COMMON_ERRORS)
+@app.get(
+    "/packs/{pack_id}/export",
+    responses={
+        200: {
+            "description": "Download the pack as a Grid++ assets SQLite database.",
+            "content": {
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            },
+        },
+        **COMMON_ERRORS,
+    },
+)
 def export_pack(pack_id: int, db: Annotated[Session, Depends(get_db)]):
     pack = load_pack(db, pack_id)
     links = sorted(pack.sprite_links, key=lambda link: link.position)
-    return {
-        "schema_version": 1,
-        "pack_id": pack.id,
-        "name": pack.name,
-        "image_spec": {
-            "width": 32,
-            "height": 32,
-            "pixel_format": "RGBA8888",
-            "bytes_per_sprite": 4096,
+    filename = pack_db_filename(pack.name, pack.id)
+    return Response(
+        content=build_pack_assets_db(links),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": (
+                "attachment; filename=\"assets.db\"; "
+                f"filename*=UTF-8''{quote(filename)}"
+            )
         },
-        "sprites": [
-            {
-                "position": link.position,
-                "id": link.sprite.id,
-                "name": link.sprite.name,
-                "tags": link.sprite.tags,
-                "image_data": base64.b64encode(link.sprite.image_data).decode("ascii"),
-            }
-            for link in links
-        ],
-    }
+    )
 
 
 STATIC_DIR = PROJECT_ROOT / "app" / "static"

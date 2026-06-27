@@ -576,7 +576,7 @@ function packCard(pack) {
   const actions = element("div", {className: "card-actions"});
   const view = element("button", {className: "button ghost", text: "查看", type: "button"});
   view.addEventListener("click", () => openPackEditor(pack.id));
-  const exportButton = element("button", {className: "button dark", text: "匯出 JSON", type: "button"});
+  const exportButton = element("button", {className: "button dark", text: "匯出 .db", type: "button"});
   exportButton.addEventListener("click", () => exportPack(pack.id, pack.name));
   actions.append(view, exportButton);
   if (pack.owner_id === state.userId) {
@@ -625,11 +625,19 @@ async function loadPacks() {
 
 async function exportPack(id, name) {
   try {
-    const data = await api(`/packs/${id}/export`);
-    const blob = new Blob([JSON.stringify(data, null, 2)], {type: "application/json;charset=utf-8"});
+    const response = await fetch(`/packs/${id}/export`);
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => null);
+      const error = errorBody?.error;
+      const detailText = Array.isArray(error?.details)
+        ? error.details.map((item) => item.message).join("；")
+        : "";
+      throw new Error(detailText || error?.message || `HTTP ${response.status}`);
+    }
+    const blob = await response.blob();
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `${name.replace(/[\\/:*?"<>|]/g, "_") || `pack-${id}`}.json`;
+    link.download = `${name.replace(/[\\/:*?"<>|]/g, "_") || `pack-${id}`}.db`;
     link.click();
     URL.revokeObjectURL(link.href);
   } catch (error) { notify(error.message, true); }
@@ -694,6 +702,10 @@ function renderLibrary() {
   const container = $("#editor-library");
   container.replaceChildren();
   const selectedIds = new Set(state.selectedSprites.map((sprite) => sprite.id));
+  const search = $("#editor-search").value.trim();
+  const selectedFolder = state.editorFavoriteFolders.find(
+    (folder) => folder.id === state.editorFavoriteFolderId,
+  );
   state.editorLibrary.forEach((sprite) => {
     const row = element("div", {className: "library-item"});
     const preview = element("div", {className: "library-preview"});
@@ -725,7 +737,7 @@ function renderLibrary() {
     container.append(row);
   });
   if (!state.editorLibrary.length) {
-    let message = "沒有符合的素材";
+    let message = search ? "沒有符合的素材" : "輸入 ID、名稱或標籤後搜尋素材";
     if (
       state.editorSource === "favorites"
       && !state.editorFavoriteFolders.length
@@ -738,9 +750,11 @@ function renderLibrary() {
       message = "請先選擇收藏夾";
     } else if (
       state.editorSource === "favorites"
-      && !$("#editor-search").value.trim()
+      && selectedFolder?.sprite_count === 0
     ) {
       message = "這個收藏夾目前沒有素材";
+    } else if (state.editorSource === "favorites" && !search) {
+      message = "輸入 ID、名稱或標籤後搜尋收藏夾素材";
     }
     container.append(element("div", {className: "empty", text: message}));
   }
@@ -749,6 +763,11 @@ function renderLibrary() {
 async function loadEditorLibrary() {
   const search = $("#editor-search").value.trim();
   const container = $("#editor-library");
+  if (!search) {
+    state.editorLibrary = [];
+    renderLibrary();
+    return;
+  }
   container.replaceChildren(element("div", {className: "empty", text: "載入中…"}));
   try {
     if (state.editorSource === "favorites") {
@@ -763,19 +782,37 @@ async function loadEditorLibrary() {
         true,
       );
       const normalizedSearch = search.normalize("NFC").toLowerCase();
-      state.editorLibrary = normalizedSearch
-        ? folder.sprites.filter((sprite) =>
-          sprite.name.normalize("NFC").toLowerCase().includes(normalizedSearch))
-        : folder.sprites;
+      state.editorLibrary = /^\d+$/.test(search)
+        ? folder.sprites.filter((sprite) => sprite.id === Number(search))
+        : folder.sprites.filter((sprite) =>
+          sprite.name.normalize("NFC").toLowerCase().includes(normalizedSearch)
+          || sprite.tags.normalize("NFC").toLowerCase().includes(normalizedSearch));
     } else {
       const params = new URLSearchParams({
         page: "1",
         page_size: "100",
         sort: "name_asc",
       });
-      if (search) params.set("name", search);
-      const data = await api(`/sprites?${params}`);
-      state.editorLibrary = data.items;
+      if (/^\d+$/.test(search)) {
+        params.set("id", search);
+        const data = await api(`/sprites?${params}`);
+        state.editorLibrary = data.items;
+      } else {
+        const byName = new URLSearchParams(params);
+        byName.set("name", search);
+        const byTag = new URLSearchParams(params);
+        byTag.set("tags", search);
+        byTag.set("tag_mode", "or");
+        const [nameData, tagData] = await Promise.all([
+          api(`/sprites?${byName}`),
+          api(`/sprites?${byTag}`),
+        ]);
+        const merged = new Map();
+        [...nameData.items, ...tagData.items].forEach((sprite) => merged.set(sprite.id, sprite));
+        state.editorLibrary = [...merged.values()].sort((left, right) =>
+          left.name.localeCompare(right.name, "zh-Hant", {sensitivity: "base"})
+          || left.id - right.id);
+      }
     }
     renderLibrary();
   } catch (error) {
@@ -783,7 +820,7 @@ async function loadEditorLibrary() {
     renderLibrary();
     notify(error.message, true);
     if (state.editorSource === "favorites") {
-      await loadEditorFavoriteFolders(false);
+      await loadEditorFavoriteFolders();
       state.editorLibrary = [];
       renderLibrary();
     }
@@ -804,7 +841,7 @@ function renderEditorFavoriteFolders() {
   select.disabled = !state.editorFavoriteFolders.length;
 }
 
-async function loadEditorFavoriteFolders(loadLibrary = true) {
+async function loadEditorFavoriteFolders() {
   try {
     const data = await api("/favorites/folders", {}, true);
     state.editorFavoriteFolders = data.items;
@@ -816,7 +853,8 @@ async function loadEditorFavoriteFolders(loadLibrary = true) {
       state.editorFavoriteFolderId = state.editorFavoriteFolders[0]?.id || null;
     }
     renderEditorFavoriteFolders();
-    if (loadLibrary) await loadEditorLibrary();
+    state.editorLibrary = [];
+    renderLibrary();
   } catch (error) {
     state.editorFavoriteFolders = [];
     state.editorFavoriteFolderId = null;
@@ -830,6 +868,7 @@ async function loadEditorFavoriteFolders(loadLibrary = true) {
 async function switchEditorSource(source) {
   state.editorSource = source;
   $("#editor-search").value = "";
+  state.editorLibrary = [];
   $$(".editor-source-tab").forEach((tab) => {
     const active = tab.dataset.editorSource === source;
     tab.classList.toggle("active", active);
@@ -839,7 +878,7 @@ async function switchEditorSource(source) {
   if (source === "favorites") {
     await loadEditorFavoriteFolders();
   } else {
-    await loadEditorLibrary();
+    renderLibrary();
   }
 }
 
@@ -880,7 +919,7 @@ async function openPackEditor(packId = null) {
   $("#pack-form").querySelector('button[type="submit"]').classList.toggle("hidden", !editable);
   $("#pack-library-section").classList.toggle("hidden", !editable);
   renderSelectedSprites(editable);
-  if (editable) await loadEditorLibrary();
+  if (editable) renderLibrary();
   $("#pack-dialog").showModal();
 }
 
@@ -982,7 +1021,8 @@ $$(".editor-source-tab").forEach((tab) => {
 $("#editor-folder-select").addEventListener("change", (event) => {
   state.editorFavoriteFolderId = Number(event.currentTarget.value) || null;
   $("#editor-search").value = "";
-  loadEditorLibrary();
+  state.editorLibrary = [];
+  renderLibrary();
 });
 
 $("#register-form").addEventListener("submit", async (event) => {
