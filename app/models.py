@@ -38,6 +38,14 @@ class User(Base):
     )
 
 
+class RevokedAccessToken(Base):
+    __tablename__ = "revoked_access_tokens"
+    __table_args__ = (Index("idx_revoked_access_tokens_expires_at", "expires_at"),)
+
+    jti: Mapped[str] = mapped_column(Text, primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class Sprite(Base):
     __tablename__ = "sprites"
     __table_args__ = (

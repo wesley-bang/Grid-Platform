@@ -21,7 +21,8 @@ def test_register_normalizes_email_and_returns_z_time(client):
         algorithms=["HS256"],
         options={"verify_aud": False},
     )
-    assert {"sub", "iat", "exp"} <= payload.keys()
+    assert {"sub", "jti", "iat", "exp"} <= payload.keys()
+    assert isinstance(payload["jti"], str) and payload["jti"]
     assert payload["exp"] - payload["iat"] == 3600
 
 
@@ -93,3 +94,43 @@ def test_logout_requires_valid_token_and_has_no_body(client):
     assert response.status_code == 204
     assert response.content == b""
     assert response.headers["x-request-id"].startswith("req_")
+
+
+def test_logout_revokes_only_that_access_token(client):
+    register(client)
+    first = login(client)
+    second = login(client)
+
+    revoked = client.post("/auth/logout", headers=auth(first))
+    assert revoked.status_code == 204
+    again = client.post("/auth/logout", headers=auth(first))
+    assert again.status_code == 204
+
+    rejected = client.get("/users/me", headers=auth(first))
+    assert rejected.status_code == 401
+    assert rejected.json()["error"]["code"] == "AUTH_TOKEN_INVALID"
+
+    mine = client.get("/sprites", params={"mine": "true"}, headers=auth(first))
+    assert mine.status_code == 401
+    assert mine.json()["error"]["code"] == "AUTH_TOKEN_INVALID"
+
+    remaining = client.get("/users/me", headers=auth(second))
+    assert remaining.status_code == 200
+    assert remaining.json()["email"] == "user@example.com"
+
+
+def test_access_token_without_jti_is_rejected(client):
+    register(client)
+    token = login(client)
+    payload = jwt.decode(
+        token,
+        get_settings().jwt_secret,
+        algorithms=["HS256"],
+        options={"verify_aud": False},
+    )
+    del payload["jti"]
+    forged = jwt.encode(payload, get_settings().jwt_secret, algorithm="HS256")
+
+    response = client.get("/users/me", headers=auth(forged))
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "AUTH_TOKEN_INVALID"

@@ -41,6 +41,8 @@ from app.security import (
     ACCESS_TOKEN_SECONDS,
     create_access_token,
     hash_password,
+    reject_revoked_token,
+    revoke_access_token,
     token_from_request,
     verify_password,
 )
@@ -167,18 +169,20 @@ async def reject_extra_form(request: Request, allowed: set[str]) -> None:
 
 
 def current_user(request: Request, db: Session) -> User:
-    user_id = token_from_request(request, required=True)
-    user = db.get(User, user_id)
+    claims = token_from_request(request, required=True)
+    reject_revoked_token(db, claims.jti)
+    user = db.get(User, claims.user_id)
     if user is None:
         raise ApiError(401, "AUTH_TOKEN_INVALID")
     return user
 
 
 def optional_user(request: Request, db: Session) -> User | None:
-    user_id = token_from_request(request, required=False)
-    if user_id is None:
+    claims = token_from_request(request, required=False)
+    if claims is None:
         return None
-    user = db.get(User, user_id)
+    reject_revoked_token(db, claims.jti)
+    user = db.get(User, claims.user_id)
     if user is None:
         raise ApiError(401, "AUTH_TOKEN_INVALID")
     return user
@@ -454,7 +458,11 @@ def login(
     responses=COMMON_ERRORS,
 )
 def logout(request: Request, db: Annotated[Session, Depends(get_db)]) -> Response:
-    current_user(request, db)
+    claims = token_from_request(request, required=True)
+    user = db.get(User, claims.user_id)
+    if user is None:
+        raise ApiError(401, "AUTH_TOKEN_INVALID")
+    revoke_access_token(db, claims)
     return Response(status_code=204)
 
 

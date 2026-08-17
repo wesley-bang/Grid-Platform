@@ -19,7 +19,11 @@ def test_favorites_migration_creates_constraints_and_triggers(tmp_path, monkeypa
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-        assert {"favorite_folders", "favorite_folder_sprites"} <= tables
+        assert {
+            "favorite_folders",
+            "favorite_folder_sprites",
+            "revoked_access_tokens",
+        } <= tables
         triggers = {
             row[0]
             for row in connection.execute(
