@@ -19,12 +19,14 @@ engine = create_engine(settings.database_url, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
-# SQLite requires foreign keys to be enabled on every connection.
+# SQLite needs FK, WAL, and a busy timeout on every connection.
 @event.listens_for(Engine, "connect")
 def enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
     if dbapi_connection.__class__.__module__.startswith("sqlite3"):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys = ON")
+        cursor.execute("PRAGMA journal_mode = WAL")
+        cursor.execute("PRAGMA busy_timeout = 5000")
         cursor.close()
 
 

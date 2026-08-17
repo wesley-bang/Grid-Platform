@@ -34,6 +34,16 @@ def test_database_checks_foreign_keys_and_delete_actions(db_session):
     assert db_session.query(PackSprite).count() == 0
 
 
+def test_sqlite_enables_wal_and_busy_timeout(tmp_path):
+    from sqlalchemy import create_engine
+
+    engine = create_engine(f"sqlite:///{(tmp_path / 'grid.db').as_posix()}")
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql("PRAGMA journal_mode").scalar() == "wal"
+        assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar() == 5000
+        assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar() == 1
+
+
 def test_database_rejects_invalid_blob_and_negative_position(db_session):
     invalid_sprite = Sprite(name="bad", tags="", image_data=b"x")
     db_session.add(invalid_sprite)

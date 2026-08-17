@@ -1,0 +1,11 @@
+services:
+  nginx:
+    networks:
+      default: {}
+      edge:
+        aliases: [grid-platform]
+
+networks:
+  edge:
+    external: true
+    name: ${EDGE_NETWORK}

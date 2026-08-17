@@ -35,7 +35,13 @@ app/
 alembic/
 ├── env.py
 └── versions/            # 資料庫遷移
+docker/
+├── entrypoint.sh        # 容器啟動：遷移後跑 uvicorn
+└── nginx.conf           # 內層 nginx：靜態檔與 API 反代
 tests/                   # API、資料庫與圖片處理測試
+Dockerfile
+docker-compose.yml
+docker-compose.edge.yml  # 可選：讓前端 nginx 加入既有外部網路
 ```
 
 ## 本機開發
@@ -130,3 +136,42 @@ Schema 變更流程：
 - 每個獨立 schema 變更建立新的 revision。
 - 不手動修改 `alembic_version`。
 - 不以修改 `alembic.ini` 切換資料庫；使用 `DATABASE_URL`。
+
+## Docker 部署
+
+Compose 預設只走內部網路，不對宿主發 port。前端 nginx 提供 `app/static/`，其餘請求反代到 FastAPI。資料庫是 volume 裡的 SQLite，啟動時會跑 `alembic upgrade head`。
+
+```bash
+cp .env.example .env
+# 填入 JWT_SECRET
+docker compose up -d --build
+docker compose down          # 不刪資料
+docker compose down -v       # 連 volume 一起刪
+```
+
+未接外層 nginx 時，宿主打不到這個堆疊，這是預設行為。
+
+### 接到伺服器既有的 nginx
+
+讓前端 nginx 加入主機上已存在的 Docker network（外層 nginx 也必須在同一張網上）：
+
+1. 在 `.env` 加上：
+
+   ```bash
+   COMPOSE_FILE=docker-compose.yml:docker-compose.edge.yml
+   EDGE_NETWORK=nginx
+   ```
+
+   `EDGE_NETWORK` 改成實際的 network 名稱。
+
+2. `docker compose up -d --build`
+
+3. 外層 nginx 反代到這個堆疊，不要把主機專用 conf 放進本 repo：
+
+   ```nginx
+   proxy_pass http://grid-platform:80;
+   ```
+
+   並設 `client_max_body_size 6m`，轉發 `Host` 與 `X-Forwarded-For` / `X-Forwarded-Proto`。
+
+別名固定為 `grid-platform`，與 compose 專案名無關。`docker compose down` 不會刪那張外部 network。

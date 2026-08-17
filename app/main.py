@@ -119,6 +119,11 @@ async def request_context(request: Request, call_next):
 install_exception_handlers(app)
 
 
+@app.get("/health", include_in_schema=False)
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 # Reuse the same documented error responses across endpoints.
 COMMON_ERRORS = {
     400: {"model": ErrorResponse},

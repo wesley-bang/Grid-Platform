@@ -6,6 +6,12 @@ from app.config import get_settings
 from tests.helpers import auth, login, register
 
 
+def test_health_ok(client):
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 def test_register_normalizes_email_and_returns_z_time(client):
     response = register(client, "  User@Example.COM  ", "長密碼" * 32)
     assert response.status_code == 201

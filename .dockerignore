@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+.cursor
+.pytest_cache
+**/__pycache__
+*.egg-info
+.env
+*.md
+tests
+grid_platform.db
+*.db-shm
+*.db-wal
+ponytail
+docker-compose*.yml
