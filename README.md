@@ -1,14 +1,46 @@
 # Grid++ 素材庫平台
 
-## 啟動
+供 Grid++ 遊戲素材上傳、搜尋、收藏、編組與匯出的 Web 平台。後端提供 REST API，並直接託管同一套原生 HTML/CSS/JavaScript 前端。
 
-需要 Python 3.13（見 `.python-version`）。設定放在 `.env`（複製 `.env.example`），行程裡已有的環境變數優先，部署用平台注入即可。
+核心功能：
 
-產生 `JWT_SECRET`（至少 32 bytes）後貼進 `.env`：
+- 帳號註冊、登入、登出與個人資料管理
+- 32×32 RGBA8888 素材上傳、預覽、搜尋與刪除
+- 私人收藏資料夾
+- 素材包編排與 Grid++ `assets.db` 匯出
+- OpenAPI 文件與一致的 API 錯誤格式
 
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
+## 技術組成
+
+- Python 3.13
+- FastAPI、Pydantic、Uvicorn
+- SQLAlchemy、Alembic
+- SQLite（預設開發資料庫）
+- Pillow（圖片處理）
+- pytest、HTTPX（測試）
+
+## 專案結構
+
+```text
+app/
+├── main.py              # FastAPI 應用程式與路由
+├── models.py            # SQLAlchemy 資料模型
+├── schemas.py           # API 回應模型
+├── validation.py        # 請求驗證與正規化
+├── image_processing.py  # 32×32 RGBA 圖片處理
+├── security.py          # 密碼雜湊與 JWT
+├── config.py            # 環境設定
+├── database.py          # Engine、Session 與 FastAPI dependency
+└── static/              # 內建前端
+alembic/
+├── env.py
+└── versions/            # 資料庫遷移
+tests/                   # API、資料庫與圖片處理測試
 ```
+
+## 本機開發
+
+### 1. 建立環境
 
 macOS / Linux：
 
@@ -17,74 +49,84 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[test]"
 cp .env.example .env
-alembic upgrade head
-uvicorn app.main:app --reload
 ```
 
-Windows（PowerShell）：
+Windows PowerShell：
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[test]"
 Copy-Item .env.example .env
+```
+
+### 2. 設定環境變數
+
+產生開發用 JWT secret：
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+將結果填入 `.env` 的 `JWT_SECRET`。可用設定如下：
+
+- `JWT_SECRET`：必填，至少 32 bytes；用於簽署一小時有效的 access token。
+- `DATABASE_URL`：選填；預設為專案根目錄的 `grid_platform.db`。
+- `CORS_ORIGINS`：選填；外部前端的允許來源，以逗號分隔，不接受 `*`。使用內建前端時不需設定。
+
+行程環境變數的優先度高於 `.env`，部署環境應直接由平台注入設定。
+
+### 3. 建立資料庫並啟動
+
+```bash
 alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-複製 `.env` 後先填 `JWT_SECRET` 再跑 `alembic` / `uvicorn`。新開終端只要再啟動 venv；secret 在 `.env`，不必重設。
+- Web UI：<http://127.0.0.1:8000/>
+- OpenAPI：<http://127.0.0.1:8000/docs>
 
-相同 `JWT_SECRET` 可在一小時內維持登入狀態。
+## 開發指令
 
-開啟 <http://127.0.0.1:8000/>，API 文件位於 <http://127.0.0.1:8000/docs>。
-
-設定：
-
-- `JWT_SECRET`：必填。
-- `DATABASE_URL`：可省略，預設為專案根目錄的 `grid_platform.db`。
-- `CORS_ORIGINS`：本機開 `http://127.0.0.1:8000/` 用內建前端時不需要。前端在別的 origin（例如 `:5500`）才設，逗號分隔，不可用 `*`。
-
-## 測試
-
-venv 啟用且已 `pip install -e ".[test]"` 之後：
+執行全部測試：
 
 ```bash
 pytest
 ```
 
-## pull 之後
+同步遠端變更後：
 
-- `pyproject.toml` 有變：再跑 `python -m pip install -e ".[test]"`。
-- 有新的 Alembic revision：跑 `alembic upgrade head`。
+- `pyproject.toml` 有更新：執行 `python -m pip install -e ".[test]"`。
+- `alembic/versions/` 有新 revision：執行 `alembic upgrade head`。
 
-## 資料庫遷移（Alembic）
+## API 與資料格式
 
-結構固定為 `alembic init` 的常見佈局：`alembic/env.py` 是環境，revision 只放在 `alembic/versions/`。
+需要登入的 API 使用 `Authorization: Bearer <token>`。Access token 有效期為一小時，登出後會立即撤銷。
 
-變更 schema 時：
+素材在資料庫與 API 中皆使用固定 4096 bytes 的 32×32 RGBA8888 原始資料。`GET /sprites/{id}/image` 回傳 `application/octet-stream`，不是 PNG。
 
-1. 先改 `app/models.py`（以及必要的應用程式碼）。
-2. 用 `alembic revision -m "簡短說明"` 產生**新檔**，或加上 `--autogenerate` 後**人工檢查**再提交。
-3. 在本機跑 `alembic upgrade head`，並補測試。
-4. 其他人 pull 之後同樣執行 `alembic upgrade head`。
+圖片上傳提供三種處理模式：
 
-禁止：
+- `pixel`：偵測並保留像素網格，必要時裁切。
+- `fit`：以 nearest-neighbor 將完整內容等比例縮入 32×32。
+- `smooth`：以預乘 Alpha 的高品質取樣縮放一般插圖。
 
-- 修改已經進版控、可能已被 stamp 的 revision（包含 `20260625_0003`）。新表、新索引一律開新 revision。
-- 改既有檔案的 `revision` / `down_revision` ID。既有資料庫靠這些 ID 對齊，改了會讓 `upgrade` 認為已是最新而漏跑。
-- 把多個無關的 schema 變更塞進同一個 revision，或手動改 `alembic_version` 表來「對齊」。
-- 直接編輯 `alembic.ini` 的 `sqlalchemy.url` 當環境切換；資料庫位置用 `DATABASE_URL` 或 `.env`。
+素材包由 `GET /packs/{id}/export` 匯出為 SQLite。檔案只包含 `sprites(id, name, tags, image_data)`，可直接供 Grid++ 引擎使用。
 
-## 上傳圖片處理
+完整端點、請求欄位與回應格式以 `/docs` 產生的 OpenAPI 文件為準。
 
-上傳視窗會顯示最終 32×32 預覽，並提供三種模式：
+## 資料庫遷移
 
-- 像素保真：嘗試還原被放大的像素網格，超過 32×32 時可拖曳裁切。
-- 完整顯示：以 NEAREST 將完整內容等比例縮入 32×32。
-- 平滑縮放：以預乘 Alpha 的高品質縮放處理一般插圖。
+Schema 變更流程：
 
-## 匯出遊戲端 assets.db
+1. 修改 `app/models.py` 及相關應用程式碼。
+2. 建立新 revision：`alembic revision -m "簡短說明"`；需要時加上 `--autogenerate`。
+3. 人工檢查 upgrade 與 downgrade 內容。
+4. 執行 `alembic upgrade head` 並補上相應測試。
 
-在「素材包」頁面點擊「匯出 .db」即可直接下載 Grid++ 引擎使用的 SQLite 檔。
+遷移規範：
 
-匯出的檔案只包含 `sprites(id, name, tags, image_data)`，其中 `image_data` 是固定 4096 bytes 的 32×32 RGBA8888 原始資料。
+- 不修改已提交、可能已套用的 revision，也不更動既有 `revision` 或 `down_revision` ID。
+- 每個獨立 schema 變更建立新的 revision。
+- 不手動修改 `alembic_version`。
+- 不以修改 `alembic.ini` 切換資料庫；使用 `DATABASE_URL`。
