@@ -9,3 +9,4 @@ grid_platform.db
 *.txt
 assets.db
 assets.db.tmp
+.cursor/

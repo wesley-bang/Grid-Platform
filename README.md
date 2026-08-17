@@ -18,7 +18,7 @@ uvicorn app.main:app --reload
 
 ## 資料庫遷移（Alembic）
 
-結構固定為 `alembic init` 的常見佈局：`alembic/env.py` 是環境，revision 只放在 `alembic/versions/`。不要再把 `script_location` 與 `version_locations` 拆到不同目錄。
+結構固定為 `alembic init` 的常見佈局：`alembic/env.py` 是環境，revision 只放在 `alembic/versions/`。
 
 變更 schema 時：
 
