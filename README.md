@@ -2,19 +2,60 @@
 
 ## 啟動
 
+需要 Python 3.13（見 `.python-version`）。設定放在 `.env`（複製 `.env.example`），行程裡已有的環境變數優先，部署用平台注入即可。
+
+產生 `JWT_SECRET`（至少 32 bytes）後貼進 `.env`：
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+macOS / Linux：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[test]"
+cp .env.example .env
+alembic upgrade head
+uvicorn app.main:app --reload
+```
+
+Windows（PowerShell）：
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[test]"
-$env:JWT_SECRET = "請替換為至少 32 bytes 的安全隨機字串"
+Copy-Item .env.example .env
 alembic upgrade head
 uvicorn app.main:app --reload
 ```
-相同 `JWT_SECRET` 可在一小時內維持登入狀態。 
+
+複製 `.env` 後先填 `JWT_SECRET` 再跑 `alembic` / `uvicorn`。新開終端只要再啟動 venv；secret 在 `.env`，不必重設。
+
+相同 `JWT_SECRET` 可在一小時內維持登入狀態。
 
 開啟 <http://127.0.0.1:8000/>，API 文件位於 <http://127.0.0.1:8000/docs>。
 
-可用 `DATABASE_URL` 覆寫平台資料庫位置，以逗號分隔的 `CORS_ORIGINS` 設定允許來源。
+設定：
+
+- `JWT_SECRET`：必填。
+- `DATABASE_URL`：可省略，預設為專案根目錄的 `grid_platform.db`。
+- `CORS_ORIGINS`：本機開 `http://127.0.0.1:8000/` 用內建前端時不需要。前端在別的 origin（例如 `:5500`）才設，逗號分隔，不可用 `*`。
+
+## 測試
+
+venv 啟用且已 `pip install -e ".[test]"` 之後：
+
+```bash
+pytest
+```
+
+## pull 之後
+
+- `pyproject.toml` 有變：再跑 `python -m pip install -e ".[test]"`。
+- 有新的 Alembic revision：跑 `alembic upgrade head`。
 
 ## 資料庫遷移（Alembic）
 
@@ -32,7 +73,7 @@ uvicorn app.main:app --reload
 - 修改已經進版控、可能已被 stamp 的 revision（包含 `20260625_0003`）。新表、新索引一律開新 revision。
 - 改既有檔案的 `revision` / `down_revision` ID。既有資料庫靠這些 ID 對齊，改了會讓 `upgrade` 認為已是最新而漏跑。
 - 把多個無關的 schema 變更塞進同一個 revision，或手動改 `alembic_version` 表來「對齊」。
-- 直接編輯 `alembic.ini` 的 `sqlalchemy.url` 當環境切換；資料庫位置用 `DATABASE_URL`。
+- 直接編輯 `alembic.ini` 的 `sqlalchemy.url` 當環境切換；資料庫位置用 `DATABASE_URL` 或 `.env`。
 
 ## 上傳圖片處理
 

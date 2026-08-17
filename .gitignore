@@ -3,10 +3,10 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .venv/
+.env
 grid_platform.db
 *.db-shm
 *.db-wal
-*.txt
 assets.db
 assets.db.tmp
 .cursor/

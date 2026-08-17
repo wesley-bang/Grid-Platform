@@ -4,6 +4,7 @@ import os
 
 os.environ.setdefault("JWT_SECRET", "test-secret-that-is-at-least-thirty-two-bytes")
 os.environ.setdefault("CORS_ORIGINS", "http://localhost:5500")
+os.environ.setdefault("DATABASE_URL", "sqlite://")
 
 import pytest
 from fastapi.testclient import TestClient
