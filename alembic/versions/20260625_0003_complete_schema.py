@@ -1,10 +1,14 @@
-"""Create the complete Grid++ platform schema."""
+"""Create the complete Grid++ platform schema.
+
+Revision ID: 20260625_0003
+Revises:
+Create Date: 2026-06-25
+"""
 
 from alembic import op
 import sqlalchemy as sa
 
 
-# Keep the deployed head ID so existing local databases remain compatible.
 revision = "20260625_0003"
 down_revision = None
 branch_labels = None
