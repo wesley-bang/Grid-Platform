@@ -139,39 +139,131 @@ Schema 變更流程：
 
 ## Docker 部署
 
-Compose 預設只走內部網路，不對宿主發 port。前端 nginx 提供 `app/static/`，其餘請求反代到 FastAPI。資料庫是 volume 裡的 SQLite，啟動時會跑 `alembic upgrade head`。
+本節是伺服器部署 SOP。Compose 內含前端 nginx、FastAPI 與 SQLite；前端 nginx 提供 `app/static/`，其餘請求反代到 FastAPI。SQLite 資料存放在 Docker volume，應用程式啟動時會自動執行 `alembic upgrade head`。
+
+Compose 預設不對宿主機發布 port。若要讓外部使用者連線，必須依下列步驟接到伺服器既有的外層 nginx。
+
+### 一、部署前確認
+
+1. 進入專案根目錄。
+2. 確認主機已安裝 Docker，且 `docker compose version` 可正常執行。
+3. 若要對外提供服務，確認外層 nginx：
+   - 以 container 執行。
+   - 已加入一張既有的 Docker network。
+   - 可修改其主機專用 nginx 設定。
+4. 記下該 Docker network 名稱；以下範例使用 `nginx`。
+
+可用下列指令確認 network 是否存在：
 
 ```bash
-cp .env.example .env
-# 填入 JWT_SECRET
-docker compose up -d --build
-docker compose down          # 不刪資料
-docker compose down -v       # 連 volume 一起刪
+docker network inspect nginx
 ```
 
-未接外層 nginx 時，宿主打不到這個堆疊，這是預設行為。
+### 二、建立環境設定
 
-### 接到伺服器既有的 nginx
+1. 首次部署時複製範例檔：
 
-讓前端 nginx 加入主機上已存在的 Docker network（外層 nginx 也必須在同一張網上）：
+   ```bash
+   cp .env.example .env
+   ```
 
-1. 在 `.env` 加上：
+   若 `.env` 已存在，不要再次複製，以免覆蓋既有設定。
+
+2. 產生 JWT secret：
+
+   ```bash
+   python -c "import secrets; print(secrets.token_urlsafe(32))"
+   ```
+
+3. 編輯 `.env`，將產生的值填入 `JWT_SECRET`，不要將 `.env` 提交到版本庫。
+
+4. 若只需要讓容器彼此連線，不需修改其他設定，可直接進行「四、啟動服務」。此模式不發布宿主機 port，因此無法從宿主機或外部網路直接連線。
+
+5. 若要接到外層 nginx，在 `.env` 取消註解並填入：
 
    ```bash
    COMPOSE_FILE=docker-compose.yml:docker-compose.edge.yml
    EDGE_NETWORK=nginx
    ```
 
-   `EDGE_NETWORK` 改成實際的 network 名稱。
+   將 `nginx` 改成第一節確認的實際 network 名稱。
 
-2. `docker compose up -d --build`
+### 三、設定外層 nginx
 
-3. 外層 nginx 反代到這個堆疊，不要把主機專用 conf 放進本 repo：
+1. 確認外層 nginx container 也在 `EDGE_NETWORK` 指定的 network 上。
+2. 在外層 nginx 的主機專用設定加入下列內容；不要將該主機專用設定放入本 repo：
 
    ```nginx
-   proxy_pass http://grid-platform:80;
+   client_max_body_size 6m;
+
+   location / {
+       proxy_pass http://grid-platform:80;
+       proxy_set_header Host $host;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+   }
    ```
 
-   並設 `client_max_body_size 6m`，轉發 `Host` 與 `X-Forwarded-For` / `X-Forwarded-Proto`。
+3. 檢查 nginx 設定語法，確認成功後再依伺服器原有方式 reload nginx。
 
-別名固定為 `grid-platform`，與 compose 專案名無關。`docker compose down` 不會刪那張外部 network。
+`grid-platform` 是此服務在外部 network 上的固定別名，與 Compose 專案名稱無關。
+
+### 四、啟動服務
+
+1. 先檢查 Compose 設定：
+
+   ```bash
+   docker compose config --quiet
+   ```
+
+2. 建置並在背景啟動：
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+3. 確認 `nginx` 與 `app` 皆為 `healthy`：
+
+   ```bash
+   docker compose ps
+   ```
+
+4. 若服務未正常啟動，先查看近期 log：
+
+   ```bash
+   docker compose logs --tail=100 app nginx
+   ```
+
+### 五、部署驗收
+
+1. 從服務內部檢查健康端點：
+
+   ```bash
+   docker compose exec nginx wget -qO- http://127.0.0.1/health
+   ```
+
+2. 已設定外層 nginx 時，再以實際網域開啟首頁與 `/docs`。
+3. 確認可登入，並至少讀取一次既有資料。
+
+### 六、更新或停止服務
+
+更新程式碼後，重新建置並啟動；啟動時會自動套用尚未執行的資料庫遷移：
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+停止並移除 container，但保留 SQLite volume：
+
+```bash
+docker compose down
+```
+
+只有確定要連同資料庫永久刪除時，才可執行：
+
+```bash
+docker compose down -v
+```
+
+`docker compose down` 不會刪除外部 nginx network；`docker compose down -v` 會刪除本專案的 SQLite volume 與其中資料。
